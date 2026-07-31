@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.1 — 2026-07-31
+
+### Fixed
+
+- README: the npm 12+ install line now includes `--allow-remote=root` —
+  npm 12 disables URL-tarball fetches by default, so the documented command
+  failed with `EALLOWREMOTE` before reaching the install-scripts step.
+
 ## 1.0.0 — 2026-07-31
 
 First public release.
