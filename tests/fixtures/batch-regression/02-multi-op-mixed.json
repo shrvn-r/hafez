@@ -1,0 +1,25 @@
+[
+  {
+    "op": "create",
+    "kind": "entity",
+    "name": "Phase 3: Hafez Simorgh Integration",
+    "fields": {
+      "type": "project",
+      "domain": ["ai"],
+      "brief": "Cross-fertilize Hafez (vault structure) and Simorgh (bot intelligence) across all dashboard surfaces. 14 tasks: graph evolution with reasoning thread nodes + layer toggles, entity enrichment with memory pulse + bot memories, knowledge provenance chains, memory entity context, unified search across vault + memories + transcripts.",
+      "add_action": "Execute Phase 3 plan via subagent-driven-development"
+    }
+  },
+  {
+    "op": "link",
+    "slug": "phase-3-hafez-simorgh-integration",
+    "target": "simorgh-dashboard",
+    "relation": "parent"
+  },
+  {
+    "op": "link",
+    "slug": "phase-3-hafez-simorgh-integration",
+    "target": "phase-2-dashboard-vault-reader-replacement",
+    "relation": "related"
+  }
+]

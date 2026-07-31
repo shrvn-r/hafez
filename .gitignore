@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.claude/worktrees/
+.worktrees/
+.DS_Store
+reference/transcripts/
+
+# SQLite WAL/SHM sidecars — transient runtime artifacts
+*.db-shm
+*.db-wal

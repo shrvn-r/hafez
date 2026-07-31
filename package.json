@@ -1,0 +1,67 @@
+{
+  "name": "hafez",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "bin": {
+    "hafez": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "skill",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "install:local": "mkdir -p ~/.local/bin && ln -sf \"$(pwd)/dist/cli.js\" ~/.local/bin/hafez && rm -f ~/.claude/skills/hafez/SKILL.md && mkdir -p ~/.claude/skills/hafez && cp \"$(pwd)/skill/SKILL.md\" ~/.claude/skills/hafez/SKILL.md",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "gray-matter": "^4.0.3",
+    "js-yaml": "^4.1.1",
+    "simple-git": "^3.33.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^25.4.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  },
+  "license": "MIT",
+  "description": "Agent-native personal knowledge vault: markdown + YAML frontmatter, SQLite FTS5 search, git-backed",
+  "keywords": [
+    "knowledge-base",
+    "knowledge-vault",
+    "agent",
+    "ai-agents",
+    "claude-code",
+    "markdown",
+    "frontmatter",
+    "second-brain",
+    "cli",
+    "sqlite",
+    "fts5"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shrvn-r/hafez.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shrvn-r/hafez/issues"
+  },
+  "homepage": "https://github.com/shrvn-r/hafez#readme"
+}

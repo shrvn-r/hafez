@@ -1,0 +1,41 @@
+[
+  {
+    "op": "update",
+    "slug": "hafez",
+    "fields": {
+      "complete_action": "Execute Phase 1 implementation plan"
+    }
+  },
+  {
+    "op": "update",
+    "slug": "hafez",
+    "fields": {
+      "complete_action": "Implement knowledge subtype schema"
+    }
+  },
+  {
+    "op": "update",
+    "slug": "hafez",
+    "fields": {
+      "session_log": {
+        "type": "progress",
+        "summary": "Shipped v0.2.0: 3+1 type system (capture/entity/project + knowledge subtypes), 3 statuses (active/paused/done), contracts.ts, promote operation with batch support, subtype column in SQLite, CLI --subtype flag, 358 tests passing.",
+        "agent": "claude"
+      }
+    }
+  },
+  {
+    "op": "update",
+    "slug": "hafez",
+    "fields": {
+      "add_action": "Write Phase 2 plan: vault migration (rewrite 145 entities + 77 knowledge notes to v2 types)"
+    }
+  },
+  {
+    "op": "update",
+    "slug": "hafez",
+    "fields": {
+      "add_action": "Update hafez skill SKILL.md with full v2 type reference"
+    }
+  }
+]

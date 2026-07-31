@@ -1,0 +1,9 @@
+[
+  {
+    "op": "update",
+    "slug": "hafez",
+    "fields": {
+      "status": "done"
+    }
+  }
+]
