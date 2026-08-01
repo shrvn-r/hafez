@@ -1,6 +1,6 @@
 {
   "name": "hafez",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -34,15 +34,15 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
-    "@types/proper-lockfile": "^4.1.4",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.4.0",
+    "@types/proper-lockfile": "^4.1.4",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
   },
   "license": "MIT",
-  "description": "Agent-native personal knowledge vault: markdown + YAML frontmatter, SQLite FTS5 search, git-backed",
+  "description": "A knowledge and project vault shared between you and your agents — plain markdown + git, schema-enforced writes, FTS5 search, operated by agents through a CLI",
   "keywords": [
     "knowledge-base",
     "knowledge-vault",

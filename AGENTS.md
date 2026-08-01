@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Hafez — agent-native personal knowledge vault. Markdown files with YAML
+Hafez — a knowledge and project vault shared between you and your agents. Markdown files with YAML
 frontmatter (entities, knowledge, sessions), SQLite FTS5 read index, git as
 source of truth and sync. See `README.md` for concepts and the CLI overview.
 

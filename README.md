@@ -1,12 +1,14 @@
 # Hafez
 
-**An agent-native personal knowledge vault.** *Hafez* (حافظ) is Persian for "the keeper — the one who memorizes," after the poet. It keeps a durable, structured memory for AI agents: plain markdown files you own, backed by SQLite full-text search and git.
+**A knowledge and project vault shared between you and your agents.** *Hafez* (حافظ) is Persian for "the keeper — the one who memorizes," after the poet. Plain markdown files you own, backed by SQLite full-text search and git.
 
 ## Why
 
-AI agents forget everything between sessions. Hafez gives them a place to remember — projects, insights, decisions, session history — as a knowledge graph they can read, query, and write through a CLI.
+Humans have short-term context. Agents have session context. Both can think big only about what's loaded right now — so both need a place that carries what happened and where things stand, ready whenever either wants to remember. Hafez is that place: projects with goals, actions, and progress; decisions; the insights that outlive them — a graph of markdown files both of you read.
 
-The files stay yours. Everything is markdown with YAML frontmatter in a git repo: readable in any editor, Obsidian-compatible, diffable, and synced like code. The SQLite index (`.hafez.db`) is a disposable read cache rebuilt from the files; git is the source of truth and the sync mechanism.
+Writing is the agent's job. As you work, the results organise themselves into the vault — at session end, at the critical points of a project — through a CLI that owns the plumbing: structure, validation, search, index, git. A malformed write fails; links must resolve. No agent decides how to treat your vault, so every agent treats it the same — and its context goes to your content, not your conventions.
+
+The files stay yours. Everything is markdown with YAML frontmatter in a git repo: readable — and editable — in any editor, Obsidian-compatible, diffable, and synced like code. The SQLite index (`.hafez.db`) is a disposable read cache rebuilt from the files; git is the source of truth and the sync mechanism. Nothing is trapped, either: `hafez export --okf` writes the vault as a standard [OKF v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle — Hafez's schema is stricter than OKF's, so the export loses nothing.
 
 ## Setup
 

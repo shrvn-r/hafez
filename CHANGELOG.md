@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.1.1 — 2026-08-01
+
+Docs release: the README now says what Hafez is for, not just what it is
+made of. No code changes.
+
+### Changed
+
+- **README identity rewritten.** Hafez is a knowledge and project vault
+  shared between you and your agents: humans have short-term context,
+  agents have session context, and the vault is where both remember. The
+  Why now explains the division of labor — agents write through a CLI
+  that enforces the schema (a malformed write fails, links must
+  resolve), so every agent treats the vault the same and spends its
+  context on content, not conventions.
+- **Data freedom stated explicitly.** `hafez export --okf` is now
+  covered in the README's "files stay yours" paragraph, with a link to
+  the OKF v0.1 spec — Hafez's schema is stricter than OKF's, so the
+  export loses nothing.
+- **npm package description and AGENTS.md** aligned to the same
+  identity.
+
 ## 1.1.0 — 2026-08-01
 
 First-run onboarding release: a fresh install now has a guided path from
