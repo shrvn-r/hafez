@@ -227,4 +227,57 @@ describe('mergeVaultContent', () => {
     expect(fm.domain).toContain('infra')
     expect(fm.domain.length).toBe(2)
   })
+
+  // --- COR-4: union appends, newest-wins scalars ---
+
+  it('unions Evidence lines from both sides (COR-4)', () => {
+    const remoteBody = '\n## Evidence\n\n- Remote observed the pattern again\n- Shared evidence line\n'
+    const localBody = '\n## Evidence\n\n- Shared evidence line\n- Local observed a counterexample\n'
+    const remote = vaultFile({ name: 'K', confidence: 'pattern', created: '2026-01-01', 'last-touched': '2026-03-23' }, remoteBody)
+    const local = vaultFile({ name: 'K', confidence: 'pattern', created: '2026-01-01', 'last-touched': '2026-03-23' }, localBody)
+    const merged = mergeVaultContent(remote, local)
+    expect(merged).toContain('Remote observed the pattern again')
+    expect(merged).toContain('Local observed a counterexample')
+    const sharedCount = (merged.match(/Shared evidence line/g) ?? []).length
+    expect(sharedCount).toBe(1)
+  })
+
+  it('unions Sources lines from both sides (COR-4)', () => {
+    const remoteBody = '\n## Sources\n\n- https://example.com/remote\n'
+    const localBody = '\n## Sources\n\n- https://example.com/local\n'
+    const remote = vaultFile({ name: 'K', confidence: 'pattern', created: '2026-01-01', 'last-touched': '2026-03-23' }, remoteBody)
+    const local = vaultFile({ name: 'K', confidence: 'pattern', created: '2026-01-01', 'last-touched': '2026-03-23' }, localBody)
+    const merged = mergeVaultContent(remote, local)
+    expect(merged).toContain('https://example.com/remote')
+    expect(merged).toContain('https://example.com/local')
+  })
+
+  it('remote wins scalars and scalar sections when remote is newer (COR-4)', () => {
+    const remoteBody = '\n## Brief\n\nRemote context\n'
+    const localBody = '\n## Brief\n\nLocal context\n'
+    const remote = vaultFile({ name: 'A', type: 'project', status: 'paused', created: '2026-01-01', 'last-touched': '2026-03-25' }, remoteBody)
+    const local = vaultFile({ name: 'A', type: 'project', status: 'active', created: '2026-01-01', 'last-touched': '2026-03-23' }, localBody)
+    const merged = mergeVaultContent(remote, local)
+    expect(merged).toContain('status: paused')
+    expect(merged).toContain('Remote context')
+    expect(merged).not.toContain('Local context')
+    expect(parseContent(merged).frontmatter['last-touched']).toBe('2026-03-25')
+  })
+
+  it('local wins scalars on last-touched tie (COR-4)', () => {
+    const remote = vaultFile({ name: 'A', type: 'project', status: 'paused', created: '2026-01-01', 'last-touched': '2026-03-23' })
+    const local = vaultFile({ name: 'A', type: 'project', status: 'active', created: '2026-01-01', 'last-touched': '2026-03-23' })
+    const merged = mergeVaultContent(remote, local)
+    expect(merged).toContain('status: active')
+  })
+
+  it('still unions append-only sections when remote is newer (COR-4)', () => {
+    const remoteBody = '\n## Session Log\n\n### 2026-03-25 — Simorgh [progress]\nSummary: Remote work\n'
+    const localBody = '\n## Session Log\n\n### 2026-03-23 — Claude [progress]\nSummary: Local work\n'
+    const remote = vaultFile({ name: 'A', type: 'project', status: 'active', created: '2026-01-01', 'last-touched': '2026-03-25' }, remoteBody)
+    const local = vaultFile({ name: 'A', type: 'project', status: 'active', created: '2026-01-01', 'last-touched': '2026-03-23' }, localBody)
+    const merged = mergeVaultContent(remote, local)
+    expect(merged).toContain('Remote work')
+    expect(merged).toContain('Local work')
+  })
 })

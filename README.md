@@ -16,11 +16,9 @@ Claude Code (or any agent with shell access):
 ```text
 Set up Hafez, an agent-native knowledge vault (github.com/shrvn-r/hafez):
 
-1. Install the CLI (needs Node.js 22+ and git):
-   npm install -g https://github.com/shrvn-r/hafez/releases/latest/download/hafez.tgz
-   On npm 12+, append --allow-remote=root --allow-scripts=better-sqlite3
-   (npm 12 blocks URL-tarball installs and install scripts by default;
-   the SQLite bindings need their install script).
+1. Install the CLI (needs Node.js 22+ and git): npm install -g hafez
+   On npm 12+, append --allow-scripts=better-sqlite3 (npm 12 blocks install
+   scripts by default; the SQLite bindings need theirs).
 2. Check git identity is configured (git config user.name and user.email);
    if not, ask me for a name and email and set them with git config --global.
 3. Create my vault — a git repo with entities/ and knowledge/ directories and an
@@ -43,8 +41,8 @@ The same thing by hand:
 
 ```bash
 # Install (Node.js 22+ and git required).
-# On npm 12+, append: --allow-remote=root --allow-scripts=better-sqlite3
-npm install -g https://github.com/shrvn-r/hafez/releases/latest/download/hafez.tgz
+# On npm 12+, append: --allow-scripts=better-sqlite3
+npm install -g hafez
 
 # One-time, if you've never used git on this machine:
 #   git config --global user.name "Your Name"
@@ -61,9 +59,9 @@ mkdir -p ~/.claude/skills/hafez
 cp "$(npm root -g)/hafez/skill/SKILL.md" ~/.claude/skills/hafez/SKILL.md
 ```
 
-On npm ≤11, `npm install -g github:shrvn-r/hafez` also works (npm 12 disables
-git installs by default). An npm registry package is planned; GitHub is the
-distribution channel for now.
+Prefer installing without the npm registry? The GitHub release tarball is the
+same artifact: `npm install -g https://github.com/shrvn-r/hafez/releases/latest/download/hafez.tgz`
+(npm 12+ additionally needs `--allow-remote=root`).
 
 ## Quick start
 

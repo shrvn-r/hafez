@@ -12,7 +12,6 @@ import {
 import { formatBatchError } from './batch-errors.js'
 import { parseDigestInput, digest } from '../digest.js'
 import { formatEntityHeader, formatKnowledgeHeader, formatQueryTable, formatKnowledgeTable, formatSearchResults, formatValidation, formatStats, formatChangelog } from './format.js'
-import { migrateKnowledgeV2 } from '../migrate-knowledge-v2.js'
 
 export interface CommandOpts { json?: boolean }
 
@@ -110,18 +109,7 @@ export async function cmdSearch(os: Hafez, args: string[], opts: CommandOpts = {
 
 export async function cmdCreate(os: Hafez, args: string[], opts: CommandOpts = {}): Promise<string> {
   const kind = args[0]
-  if (!kind) throw new Error('Usage: hafez create <entity|knowledge|inbox> <name> [options]')
-
-  if (kind === 'inbox') {
-    const name = positionalArgs(args.slice(1)).join(' ')
-    if (!name) throw new Error('Usage: hafez create inbox <name> [--notes "text"]')
-    const notes = getFlag(args, '--notes')
-    process.stderr.write(
-      'Warning: `hafez create inbox` is deprecated. Use `hafez capture <name>` instead.\n',
-    )
-    const slug = await os.capture(name, notes)
-    return opts.json ? jsonOut({ slug }) : slug
-  }
+  if (!kind) throw new Error('Usage: hafez create <entity|knowledge> <name> [options]')
 
   const name = positionalArgs(args.slice(1)).join(' ')
   if (!name) throw new Error(`Usage: hafez create ${kind} <name> [options]`)
@@ -156,7 +144,7 @@ export async function cmdCreate(os: Hafez, args: string[], opts: CommandOpts = {
     return opts.json ? jsonOut({ slug }) : slug
   }
 
-  throw new Error(`Unknown kind: ${kind}. Use entity, knowledge, or inbox.`)
+  throw new Error(`Unknown kind: ${kind}. Use entity or knowledge.`)
 }
 
 export async function cmdUpdate(os: Hafez, args: string[], opts: CommandOpts = {}): Promise<string> {
@@ -167,12 +155,11 @@ export async function cmdUpdate(os: Hafez, args: string[], opts: CommandOpts = {
   const status = getFlag(args, '--status') as EntityStatus | undefined
   if (status) fields.status = status
 
-  // Legacy --next-action: deprecation notice
-  const nextAction = getFlag(args, '--next-action')
-  if (nextAction !== undefined) {
-    process.stderr.write('Warning: --next-action is deprecated. Use --add-action instead.\n')
-    fields.add_action = nextAction === '' ? undefined : nextAction
-    if (nextAction === '') fields.clear_actions = true
+  // Removed flag must fail loudly, not silently drop the value: older
+  // installed skills/scripts still pass it, and "Updated <slug>" with the
+  // action discarded is a false success.
+  if (args.includes('--next-action')) {
+    throw new Error('--next-action was removed in v1.0.2. Use --add-action (and --clear-actions) instead.')
   }
 
   const currentState = getFlag(args, '--current-state')
@@ -237,36 +224,18 @@ export async function cmdUpdate(os: Hafez, args: string[], opts: CommandOpts = {
   return lines.join('\n')
 }
 
-/**
- * Parse link/unlink args, supporting both the legacy positional form
- * (`hafez link <slug> <target> <parent|related>`) and the new
- * `--relation <value>` named flag. Positional remains accepted as a
- * deprecated alias — emits a one-line warning to stderr.
- */
 function parseLinkArgs(args: string[], verb: 'link' | 'unlink'): { slug: string; target: string; relation: string } {
-  const relationFlag = getFlag(args, '--relation')
+  const relation = getFlag(args, '--relation')
   // After getFlag the relation value is still at its original positional slot
-  // (getFlag does NOT splice), so strip it manually to prevent it from being
-  // mistaken for a positional if someone passes both forms. Here we only
-  // consume the flag once above.
+  // (getFlag does NOT splice), so strip it manually before reading positionals.
   const positionals = args.filter((a, i) => {
     if (a === '--relation') return false
     if (i > 0 && args[i - 1] === '--relation') return false
     return !a.startsWith('--')
   })
-  const [slug, target, positionalRelation] = positionals
-  if (!slug || !target) {
+  const [slug, target] = positionals
+  if (!slug || !target || !relation) {
     throw new Error(`Usage: hafez ${verb} <slug> <target> --relation <parent|related>`)
-  }
-  let relation = relationFlag
-  if (!relation) {
-    if (!positionalRelation) {
-      throw new Error(`Usage: hafez ${verb} <slug> <target> --relation <parent|related>`)
-    }
-    relation = positionalRelation
-    process.stderr.write(
-      `Warning: positional relation is deprecated. Use: hafez ${verb} ${slug} ${target} --relation ${relation}\n`,
-    )
   }
   if (!['parent', 'related'].includes(relation)) {
     throw new Error(`Invalid relation: ${relation}. Must be parent or related.`)
@@ -286,10 +255,7 @@ export async function cmdUnlink(os: Hafez, args: string[], opts: CommandOpts = {
   return opts.json ? jsonOut({ slug, target, relation }) : `Unlinked ${slug} — ${target} (${relation})`
 }
 
-/**
- * Top-level capture command — aliases to the same handler used by
- * `hafez create inbox`. Added to align the CLI verb with the batch op name.
- */
+/** Top-level capture command — aligns the CLI verb with the batch op name. */
 export async function cmdCapture(os: Hafez, args: string[], opts: CommandOpts = {}): Promise<string> {
   const name = positionalArgs(args).join(' ')
   if (!name) throw new Error('Usage: hafez capture <name> [--notes "text"]')
@@ -610,24 +576,6 @@ export async function cmdDigest(os: Hafez, _args: string[], _opts: CommandOpts =
 
   const ops = digest(result.data, existingSlugs)
   return JSON.stringify(ops, null, 2)
-}
-
-export async function cmdMigrateKnowledgeV2(args: string[], vaultPath: string): Promise<void> {
-  const apply = args.includes('--apply')
-  const report = migrateKnowledgeV2(vaultPath, { apply })
-
-  console.log(`## Migration: knowledge-v2 ${apply ? '(APPLIED)' : '(dry run)'}`)
-  console.log(`- Sessions to move: ${report.sessionsToMove.length}`)
-  for (const f of report.sessionsToMove) console.log(`  - ${f}`)
-  console.log(`- Empty notes to delete: ${report.emptyToDelete.length}`)
-  for (const f of report.emptyToDelete) console.log(`  - ${f}`)
-  console.log(`- ## Insight → ## Synthesis: ${report.insightToRename.length}`)
-  for (const f of report.insightToRename) console.log(`  - ${f}`)
-  console.log(`- ## Related to generate: ${report.relatedToGenerate.length}`)
-  for (const f of report.relatedToGenerate) console.log(`  - ${f}`)
-  console.log(`- .gitignore needs update: ${report.gitignoreNeeded}`)
-  if (apply && report.gitCommitFailed) console.log('⚠ Warning: git commit failed — changes are applied but not committed.')
-  if (!apply) console.log('\nRun with --apply to execute migration.')
 }
 
 // --- Arg helpers ---

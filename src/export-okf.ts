@@ -1,7 +1,7 @@
 // src/export-okf.ts
 // Read-only export of the vault as an OKF v0.1 bundle (entities + knowledge + sessions).
 // Spec: https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md
-// Pure sync function — no Hafez instance, index, git, or lock (mirrors migrate-*.ts).
+// Pure sync function — no Hafez instance, index, git, or lock.
 // Re-export overwrites a prior bundle in place but never deletes: files for vault
 // docs renamed or removed since the last export linger (unreferenced by the
 // regenerated indexes) until the bundle directory is deleted and re-exported.

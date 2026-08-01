@@ -340,3 +340,12 @@ describe('export --okf', () => {
     expect(r.stderr).toContain('Usage: hafez export --okf')
   })
 })
+
+describe('removed --next-action flag', () => {
+  it('fails loudly instead of silently dropping the value', () => {
+    const r = run('update', 'test-proj', '--next-action', 'Deploy fix')
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr).toContain('--next-action was removed')
+    expect(r.stderr).toContain('--add-action')
+  })
+})

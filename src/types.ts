@@ -102,7 +102,6 @@ export interface ParsedSessionLogEntry {
 
 export interface UpdateFields {
   status?: EntityStatus
-  next_action?: string | null        // DEPRECATED — kept for migration, will be removed
   current_state?: string
   session_log?: SessionLogEntry
   brief?: string | null              // string = set/replace, null = remove section
@@ -124,7 +123,6 @@ export interface UpdateFields {
 }
 
 export interface UpdateResult {
-  previous_next_action?: string | null   // only set during legacy next_action updates
   matched_action?: string                // the full text of action that was completed/removed
 }
 
@@ -260,7 +258,7 @@ export type BatchOperation =
 
 // --- Errors ---
 
-export type HafezErrorCode = 'NOT_FOUND' | 'SLUG_EXISTS' | 'VALIDATION_FAILED' | 'GIT_PUSH_FAILED'
+export type HafezErrorCode = 'NOT_FOUND' | 'SLUG_EXISTS' | 'VALIDATION_FAILED' | 'GIT_PUSH_FAILED' | 'GIT_COMMIT_FAILED' | 'VAULT_LOCKED'
 
 export class HafezError extends Error {
   constructor(public code: HafezErrorCode, message: string, public details?: string[]) {

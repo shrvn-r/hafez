@@ -3,20 +3,31 @@ import matter from 'gray-matter'
 import yaml from 'js-yaml'
 import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
+import { HafezError } from './types.js'
 
 // Prevent gray-matter from auto-coercing YAML date strings into JS Date objects
 const MATTER_OPTIONS = { engines: { yaml: (s: string) => yaml.load(s, { schema: yaml.JSON_SCHEMA }) as Record<string, any> } }
 
 export function slugify(name: string): string {
+  // Unicode-aware: non-Latin letters/digits are kept, so "日本語のメモ" gets a
+  // real slug instead of collapsing to ''.
   return name
     .toLowerCase()
     .replace(/['']/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
     .replace(/^-|-$/g, '')
     .replace(/-{2,}/g, '-')
 }
 
+// Slugs are path components: anything with separators (or a leading dot, or a
+// Windows drive colon) could escape the vault — "../../outside/secret" reads,
+// writes, and deletes files anywhere on disk. Block only those; spaces and
+// non-Latin names are legitimate in a hand-edited (Obsidian) vault. Single
+// choke point for every slug-consuming operation.
 export function resolveFilePath(vaultPath: string, slug: string, kind: 'entity' | 'knowledge'): string {
+  if (!slug || slug.startsWith('.') || /[/\\:\0]/.test(slug)) {
+    throw new HafezError('VALIDATION_FAILED', `Invalid slug: '${slug}'`)
+  }
   const dir = kind === 'entity' ? 'entities' : 'knowledge'
   return join(vaultPath, dir, `${slug}.md`)
 }

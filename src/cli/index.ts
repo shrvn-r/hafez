@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { createHafez } from '../index.js'
 import { HafezError } from '../types.js'
-import { cmdRead, cmdQuery, cmdSearch, cmdCreate, cmdUpdate, cmdLink, cmdUnlink, cmdPromote, cmdValidate, cmdIndexRebuild, cmdBatch, cmdSync, cmdStats, cmdChangelog, cmdDigest, cmdMigrateKnowledgeV2, cmdCapture, type CommandOpts } from './commands.js'
+import { cmdRead, cmdQuery, cmdSearch, cmdCreate, cmdUpdate, cmdLink, cmdUnlink, cmdPromote, cmdValidate, cmdIndexRebuild, cmdBatch, cmdSync, cmdStats, cmdChangelog, cmdDigest, cmdCapture, type CommandOpts } from './commands.js'
 import { cmdSchema } from './commands-schema.js'
 import { renderAgentHelp } from './help-agent.js'
 import { resolveVaultPath, noVaultMessage, cmdInit } from './resolve-vault.js'
@@ -40,7 +40,7 @@ Commands:
   read <slug>                Read entity or knowledge note
   query [--filter ...] ...   Filter entities/knowledge
   search <terms>             Full-text search
-  create <kind> <name>       Create entity, knowledge, or inbox
+  create <kind> <name>       Create entity or knowledge note
   capture <name> [--notes]   Quick inbox capture
   promote <slug> <target>    Promote capture→entity/project/knowledge, entity→project
   update <slug> [--status]   Update an entity or knowledge note
@@ -58,12 +58,8 @@ Commands:
   digest                     Apply digest input (JSON stdin) → batch payload (JSON stdout)
   export --okf [--out <dir>] Export vault as an OKF v0.1 bundle (read-only)
   sync                       Pull remote changes and push local commits
-  migrate next-actions       Migrate next-action frontmatter to body sections
-  migrate types              Migrate vault to v2 type system (dry-run by default)
-  migrate knowledge-v2       Migrate knowledge notes to v2 section structure (dry-run by default)
-    --apply                  Execute migration (writes files, does not commit)
-  link <slug> <target> <rel> Add a link
-  unlink <slug> <target> <rel> Remove a link
+  link <slug> <target> --relation <rel>    Add a link
+  unlink <slug> <target> --relation <rel>  Remove a link
   stats                      Vault summary: counts, stale items, recents
   changelog --since <when>   Git-derived change history (e.g. --since 7.days.ago)
   schema [op] [--examples]   Machine-readable JSON schema for batch operations
@@ -188,70 +184,6 @@ export async function main(argv: string[]): Promise<void> {
       process.exit(1)
     }
     return
-  }
-
-  // migrate runs before Hafez instance creation
-  if (command === 'migrate') {
-    const subcommand = args[0]
-
-    if (subcommand === 'next-actions') {
-      const { migrateNextActions } = await import('../migrate-next-actions.js')
-      const apply = args.includes('--apply')
-      const report = migrateNextActions(vaultPath, apply)
-      const lines: string[] = []
-      if (!apply) lines.push('DRY RUN — use --apply to execute')
-      lines.push(`Candidates: ${report.candidates}`)
-      if (apply) lines.push(`Migrated: ${report.migrated}`)
-      for (const d of report.details) lines.push(`  ${d}`)
-      process.stdout.write(lines.join('\n') + '\n')
-      return
-    }
-
-    if (subcommand === 'types') {
-      const { migrateTypes } = await import('../migrate-types.js')
-      const apply = args.includes('--apply')
-      const report = migrateTypes(vaultPath, apply)
-      const lines: string[] = []
-
-      if (!apply) {
-        lines.push('DRY RUN — use --apply to execute')
-        lines.push('')
-      }
-
-      lines.push(`Type renames:         ${report.typeChanges}`)
-      lines.push(`Status renames:       ${report.statusChanges}`)
-      lines.push(`Subtypes added:       ${report.knowledgeSubtypeAdded}`)
-      lines.push(`Body restructures:    ${report.bodySectionsRestructured}`)
-      lines.push(`Malformed (skipped):  ${report.malformed.length}`)
-
-      if (report.malformed.length > 0) {
-        lines.push('')
-        lines.push('Malformed files (no type field):')
-        for (const f of report.malformed) lines.push(`  ⚠ ${f}`)
-      }
-
-      if (report.details.length > 0) {
-        lines.push('')
-        lines.push('Changes:')
-        for (const d of report.details) lines.push(`  ${d}`)
-      }
-
-      if (apply) {
-        lines.push('')
-        lines.push('Migration applied. Run `hafez index rebuild` to refresh the index.')
-      }
-
-      process.stdout.write(lines.join('\n') + '\n')
-      return
-    }
-
-    if (subcommand === 'knowledge-v2') {
-      await cmdMigrateKnowledgeV2(args.slice(1), vaultPath)
-      return
-    }
-
-    process.stderr.write('Usage: hafez migrate <next-actions|types|knowledge-v2> [--apply]\n')
-    process.exit(1)
   }
 
   // sync is handled specially — always runs, not gated by MUTATING_COMMANDS

@@ -11,6 +11,9 @@ const logMerge = (msg: string) => process.stderr.write(`[hafez-merge] ${msg}\n`)
 
 const MAX_PUSH_RETRIES = 3
 const RETRY_BASE_MS = 200
+// A pull --rebase replays one local commit at a time; each can stop on a
+// conflict. Bound the resolution loop far above any realistic commit count.
+const MAX_REBASE_STEPS = 50
 
 function isRebaseInProgress(vaultPath: string): boolean {
   return (
@@ -57,71 +60,176 @@ async function hasOriginRemote(git: SimpleGit): Promise<boolean> {
   return remotes.some(r => r.name === 'origin')
 }
 
-async function attemptSemanticMerge(
+/** Read one side of a conflicted file from the index; null if that side deleted it. */
+async function showStage(git: SimpleGit, stage: 2 | 3, file: string): Promise<string | null> {
+  try {
+    return await git.show([`:${stage}:${file}`])
+  } catch (err) {
+    // Only a genuinely absent stage means "this side deleted the file". Any
+    // other failure (spawn error, repo corruption) must abort resolution —
+    // treating it as a deletion would silently drop that side's content.
+    if (/not at stage|does not exist/i.test(String(err))) return null
+    throw err
+  }
+}
+
+/**
+ * Resolve a conflicted in-progress rebase by semantically merging each
+ * conflicting vault file and continuing the rebase — never by resetting.
+ * Every non-conflicting local commit is replayed untouched, so nothing
+ * outside the conflicting files can be lost.
+ *
+ * On failure (non-vault conflicts, malformed content, unexpected git error)
+ * the rebase is aborted, which restores the local branch exactly as it was
+ * before the pull. Returns the conflicting files either way, for error messages.
+ */
+async function resolveRebaseConflicts(
+  git: SimpleGit,
+  vaultPath: string
+): Promise<{ resolved: boolean; files: string[] }> {
+  let lastFiles: string[] = []
+
+  // Only rebase conflicts are resolvable here. A merge (MERGE_HEAD) can only
+  // come from an interrupted non-rebase pull, which hafez never runs — abort it.
+  if (isMergeInProgress(vaultPath)) {
+    await ensureCleanState(git, vaultPath)
+    return { resolved: false, files: [] }
+  }
+
+  try {
+    for (let step = 0; step < MAX_REBASE_STEPS && isRebaseInProgress(vaultPath); step++) {
+      const conflictFiles = await getConflictingFiles(git)
+      if (conflictFiles.length > 0) lastFiles = conflictFiles
+
+      if (!conflictFiles.every(f => VAULT_FILE_RE.test(f))) {
+        await ensureCleanState(git, vaultPath)
+        return { resolved: false, files: conflictFiles }
+      }
+
+      if (conflictFiles.length > 0) {
+        logMerge(`conflict detected, attempting semantic merge for: ${conflictFiles.join(', ')}`)
+      }
+
+      for (const file of conflictFiles) {
+        // During a rebase, stage 2 ("ours") is the upstream/remote side and
+        // stage 3 ("theirs") is the local commit being replayed.
+        const remoteContent = await showStage(git, 2, file)
+        const localContent = await showStage(git, 3, file)
+
+        if (remoteContent === null && localContent === null) {
+          // Deleted on both sides — accept the deletion
+          await git.raw(['rm', '--force', '--ignore-unmatch', '--', file])
+          continue
+        }
+        const merged =
+          localContent === null ? remoteContent!
+          : remoteContent === null ? localContent
+          : mergeVaultContent(remoteContent, localContent)
+
+        const fullPath = join(vaultPath, file)
+        mkdirSync(dirname(fullPath), { recursive: true })
+        writeFileSync(fullPath, merged)
+        await git.add([file])
+      }
+
+      // Decide structurally whether this step still has anything to commit:
+      // no staged paths means the merged result is identical to the already-
+      // applied tree, so the replayed commit became empty and must be skipped.
+      // Output-based on purpose — never `--quiet` exit codes (simple-git
+      // swallows diff's silent exit 1) and never git's error prose (localized,
+      // and it quotes commit subjects; a false "empty" match would skip a
+      // real commit — the COR-1 bug class again).
+      const staged = (await git.raw(['diff', '--cached', '--name-only'])).trim()
+      const stepEmpty = staged.length === 0
+
+      try {
+        // Non-interactive: --continue reuses the replayed commit's message
+        await git.rebase([stepEmpty ? '--skip' : '--continue'])
+      } catch (err) {
+        // --continue/--skip exit non-zero when the rebase stops again on the
+        // NEXT local commit's conflict. That is progress, not failure — the
+        // loop resolves the new conflicts on its next pass. Anything else
+        // (stuck with nothing to resolve) aborts via the outer catch.
+        const nextConflicts = await getConflictingFiles(git)
+        if (!isRebaseInProgress(vaultPath) || nextConflicts.length === 0) {
+          throw err
+        }
+      }
+    }
+
+    if (isRebaseInProgress(vaultPath)) {
+      // Step budget exhausted — bail out safely
+      await ensureCleanState(git, vaultPath)
+      return { resolved: false, files: lastFiles }
+    }
+
+    if (lastFiles.length > 0) logMerge(`semantic merge succeeded for: ${lastFiles.join(', ')}`)
+    return { resolved: true, files: lastFiles }
+  } catch (err) {
+    logMerge(`semantic merge failed, restoring local state: ${err}`)
+    try { await ensureCleanState(git, vaultPath) } catch { /* last resort failed */ }
+    return { resolved: false, files: lastFiles }
+  }
+}
+
+/**
+ * One `pull --rebase` attempt, resolving vault-file conflicts inside the
+ * rebase. Throws HafezError when a conflict cannot be auto-resolved (the
+ * repo is left clean, local commits intact); rethrows the raw git error on
+ * transient failures so the caller can retry.
+ */
+async function pullResolving(
   git: SimpleGit,
   vaultPath: string,
-  files: string[],
-  message: string
-): Promise<boolean> {
-  // Only merge vault files — non-vault files fall through to error
-  if (!files.every(f => VAULT_FILE_RE.test(f))) return false
-
-  logMerge(`conflict detected, attempting semantic merge for: ${files.join(', ')}`)
-  const branch = (await git.branchLocal()).current
-
-  // Save local commit SHA so we can restore if merge fails after reset
-  const localSHA = (await git.log(['-1'])).latest!.hash
-
-  // Read local content from working tree (preserved after rebase abort)
-  const localContents = new Map<string, string>()
-  for (const file of files) {
-    localContents.set(file, readFileSync(join(vaultPath, file), 'utf-8'))
-  }
-
-  // Get remote content and merge — all done BEFORE any destructive ops
-  const mergedContents = new Map<string, string>()
+  conflictMessage: (files: string[]) => string
+): Promise<void> {
   try {
-    for (const file of files) {
-      let remoteContent: string
-      try {
-        remoteContent = await git.show(`origin/${branch}:${file}`)
-      } catch {
-        // File doesn't exist on remote — no merge needed, keep local
-        mergedContents.set(file, localContents.get(file)!)
-        continue
-      }
-      mergedContents.set(file, mergeVaultContent(remoteContent, localContents.get(file)!))
-    }
-  } catch {
-    // Merge failed (malformed content, etc.) — local commit is still intact
-    return false
-  }
-
-  // --- Destructive section: reset + rewrite ---
-  // If anything fails below, restore the local commit
-  try {
-    await git.reset(['--hard', `origin/${branch}`])
-    for (const [file, content] of mergedContents) {
-      const fullPath = join(vaultPath, file)
-      mkdirSync(dirname(fullPath), { recursive: true })
-      writeFileSync(fullPath, content)
-    }
-    await git.add(files)
-
-    const status = await git.status()
-    if (status.staged.length === 0) {
-      // Contents identical after merge — nothing to commit, but we're on remote now
-      return true
-    }
-
-    await git.commit(message)
-    logMerge(`semantic merge succeeded for: ${files.join(', ')}`)
-    return true
+    await git.pull('origin', undefined, { '--rebase': null })
   } catch (err) {
-    // Restore local commit — "changes saved locally" must remain true
-    logMerge(`merge failed after reset, restoring local commit ${localSHA}: ${err}`)
-    try { await git.reset(['--hard', localSHA]) } catch { /* last resort failed */ }
-    return false
+    if (isRebaseInProgress(vaultPath) || isMergeInProgress(vaultPath)) {
+      const { resolved, files } = await resolveRebaseConflicts(git, vaultPath)
+      if (resolved) return
+      const detail = err instanceof Error ? err.message : String(err)
+      throw new HafezError('GIT_PUSH_FAILED', conflictMessage(files), [detail])
+    }
+    try { await ensureCleanState(git, vaultPath) } catch { /* preserve error */ }
+    throw err
+  }
+}
+
+/**
+ * Push local commits, pulling with rebase and resolving vault-file conflicts
+ * semantically when the push is rejected. Push-first: callers either just
+ * pulled (gitSync) or usually have a current remote view, so the extra
+ * round-trip only happens when the remote actually moved. Shared by gitSync
+ * and gitCommitAndPush — this is the single code path that decides whether
+ * local data survives a conflict.
+ */
+async function pushResolving(
+  git: SimpleGit,
+  vaultPath: string,
+  conflictMessage: (files: string[]) => string,
+  exhaustedMessage: string
+): Promise<void> {
+  let lastDetail = ''
+  for (let attempt = 1; attempt <= MAX_PUSH_RETRIES; attempt++) {
+    try {
+      await git.push()
+      return
+    } catch (pushErr) {
+      lastDetail = pushErr instanceof Error ? pushErr.message : String(pushErr)
+      // Rejected (remote moved) or transient — integrate remote, then retry
+      try {
+        await pullResolving(git, vaultPath, conflictMessage)
+      } catch (err) {
+        if (err instanceof HafezError) throw err
+        lastDetail = err instanceof Error ? err.message : String(err)
+      }
+      if (attempt === MAX_PUSH_RETRIES) {
+        throw new HafezError('GIT_PUSH_FAILED', exhaustedMessage, [lastDetail])
+      }
+      await new Promise((resolve) => setTimeout(resolve, RETRY_BASE_MS * attempt))
+    }
   }
 }
 
@@ -142,45 +250,21 @@ export async function gitSync(
   // Safe to abort without saving files — all work is already committed.
   await ensureCleanState(git, vaultPath)
 
+  const syncConflictMessage = (files: string[]) =>
+    `Git conflict during sync (files: ${files.join(', ')}). Changes saved locally.`
+
   let pulled = false
 
   // Always pull first (bidirectional sync)
   const headBefore = (await git.revparse(['HEAD'])).trim()
   for (let attempt = 1; attempt <= MAX_PUSH_RETRIES; attempt++) {
     try {
-      await git.pull('origin', undefined, { '--rebase': null })
+      await pullResolving(git, vaultPath, syncConflictMessage)
       const headAfter = (await git.revparse(['HEAD'])).trim()
       pulled = headAfter !== headBefore
       break
     } catch (err) {
-      const hadConflict =
-        isRebaseInProgress(vaultPath) || isMergeInProgress(vaultPath)
-
-      if (hadConflict) {
-        // Discover conflicting files from git status
-        const conflictFiles = await getConflictingFiles(git)
-        try { await ensureCleanState(git, vaultPath) } catch { /* preserve error */ }
-
-        if (conflictFiles.length > 0) {
-          const merged = await attemptSemanticMerge(
-            git, vaultPath, conflictFiles, `sync: resolve conflicts`
-          )
-          if (merged) {
-            pulled = true
-            break
-          }
-        }
-        // Merge not possible
-        const detail = err instanceof Error ? err.message : String(err)
-        throw new HafezError(
-          'GIT_PUSH_FAILED',
-          `Git conflict during sync (files: ${conflictFiles.join(', ')}). Changes saved locally.`,
-          [detail]
-        )
-      }
-
-      try { await ensureCleanState(git, vaultPath) } catch { /* preserve error */ }
-
+      if (err instanceof HafezError) throw err
       if (attempt === MAX_PUSH_RETRIES) {
         const detail = err instanceof Error ? err.message : String(err)
         throw new HafezError(
@@ -197,45 +281,23 @@ export async function gitSync(
   const ahead = await git.raw(['rev-list', '--count', '@{u}..HEAD']).then(s => parseInt(s.trim(), 10))
   if (ahead === 0) return { pulled, pushed: false, remote: true }
 
-  // Push local commits
-  for (let attempt = 1; attempt <= MAX_PUSH_RETRIES; attempt++) {
-    try {
-      await git.push()
-      return { pulled, pushed: true, remote: true }
-    } catch (err) {
-      // Another writer may have pushed — pull and retry
-      try {
-        await git.pull('origin', undefined, { '--rebase': null })
-      } catch (pullErr) {
-        const hadConflict =
-          isRebaseInProgress(vaultPath) || isMergeInProgress(vaultPath)
-        if (hadConflict) {
-          const conflictFiles = await getConflictingFiles(git)
-          try { await ensureCleanState(git, vaultPath) } catch { /* preserve error */ }
-          if (conflictFiles.length > 0) {
-            const merged = await attemptSemanticMerge(
-              git, vaultPath, conflictFiles, `sync: resolve conflicts`
-            )
-            if (merged) continue // retry push
-          }
-        } else {
-          try { await ensureCleanState(git, vaultPath) } catch { /* preserve error */ }
-        }
-      }
+  await pushResolving(
+    git, vaultPath, syncConflictMessage,
+    `Git push failed after ${MAX_PUSH_RETRIES} attempts during sync. Changes saved locally.`
+  )
+  return { pulled, pushed: true, remote: true }
+}
 
-      if (attempt === MAX_PUSH_RETRIES) {
-        const detail = err instanceof Error ? err.message : String(err)
-        throw new HafezError(
-          'GIT_PUSH_FAILED',
-          `Git push failed after ${MAX_PUSH_RETRIES} attempts during sync. Changes saved locally.`,
-          [detail]
-        )
-      }
-      await new Promise((resolve) => setTimeout(resolve, RETRY_BASE_MS * attempt))
-    }
-  }
-
-  return { pulled, pushed: false, remote: true } // unreachable, but satisfies TS
+/**
+ * Unstage files (best effort). Used by batch rollback: a commit that fails
+ * after `git add` leaves the new blobs staged in .git/index, and the next
+ * successful commit would publish the rolled-back content under the wrong
+ * message. Clearing the index entries restores worktree/HEAD/index agreement.
+ */
+export async function gitUnstage(vaultPath: string, files: string[]): Promise<void> {
+  try {
+    await simpleGit(vaultPath).raw(['reset', '-q', 'HEAD', '--', ...files])
+  } catch { /* best effort — rollback must not mask the original error */ }
 }
 
 /** Get list of files with unresolved conflicts */
@@ -339,73 +401,21 @@ export async function gitCommitAndPush(
   const status = await git.status()
   if (status.staged.length === 0) return
 
-  await git.commit(message)
+  const committed = await git.commit(message)
+  // simple-git swallows some commit failures (e.g. a rejected pre-commit
+  // hook) into an empty result instead of throwing. Staged content with no
+  // commit hash means the commit did NOT land — surface it so callers
+  // (batch rollback in particular) treat it as a commit-stage failure.
+  if (!committed.commit) {
+    throw new HafezError('GIT_COMMIT_FAILED', `git commit produced no commit for: ${files.join(', ')}`)
+  }
 
   if (config.push === false) return
   if (!(await hasOriginRemote(git))) return
 
-  for (let attempt = 1; attempt <= MAX_PUSH_RETRIES; attempt++) {
-    try {
-      await git.pull('origin', undefined, { '--rebase': null })
-      await git.push()
-      return // success
-    } catch (err) {
-      const hadConflict =
-        isRebaseInProgress(vaultPath) || isMergeInProgress(vaultPath)
-
-      // Always restore clean state before throwing or retrying.
-      // Wrap in try-catch to preserve the original error if abort fails.
-      try {
-        await ensureCleanState(git, vaultPath)
-      } catch {
-        // Abort failed — repo may be in a bad state, but we still throw
-        // the original error so the caller gets useful diagnostics.
-      }
-
-      const detail = err instanceof Error ? err.message : String(err)
-
-      if (hadConflict) {
-        const merged = await attemptSemanticMerge(git, vaultPath, files, message)
-        if (merged) {
-          // Try pushing the merged result
-          try {
-            await git.push()
-            return // success
-          } catch (pushErr) {
-            // One final retry: another writer may have pushed during our merge
-            try {
-              await git.pull('origin', undefined, { '--rebase': null })
-              await git.push()
-              return
-            } catch (retryErr) {
-              try { await ensureCleanState(git, vaultPath) } catch { /* preserve original error */ }
-              const retryDetail = retryErr instanceof Error ? retryErr.message : String(retryErr)
-              throw new HafezError(
-                'GIT_PUSH_FAILED',
-                `Git push failed after semantic merge. Changes saved locally.`,
-                [retryDetail]
-              )
-            }
-          }
-        }
-        // Merge not possible (non-vault files) — original behavior
-        throw new HafezError(
-          'GIT_PUSH_FAILED',
-          `Git conflict with remote (files: ${files.join(', ')}). Changes saved locally.`,
-          [detail]
-        )
-      }
-
-      // Transient error (network, push race). Retry if attempts remain.
-      if (attempt === MAX_PUSH_RETRIES) {
-        throw new HafezError(
-          'GIT_PUSH_FAILED',
-          `Git push failed after ${MAX_PUSH_RETRIES} attempts. Changes saved locally.`,
-          [detail]
-        )
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, RETRY_BASE_MS * attempt))
-    }
-  }
+  await pushResolving(
+    git, vaultPath,
+    (conflictFiles) => `Git conflict with remote (files: ${conflictFiles.join(', ')}). Changes saved locally.`,
+    `Git push failed after ${MAX_PUSH_RETRIES} attempts. Changes saved locally.`
+  )
 }

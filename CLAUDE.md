@@ -9,7 +9,7 @@ source of truth and sync. See `README.md` for concepts and the CLI overview.
 ```bash
 npm install        # runs prepare → tsc → dist/
 npm run build      # pure tsc, no side effects
-npm test           # vitest; CLI tests exec dist/cli.js, so build first
+npm test           # builds dist/ first, then vitest (CLI tests exec dist/cli.js)
 npx vitest run tests/git.test.ts     # single file
 npx vitest run -t "creates entity"   # by name
 ```

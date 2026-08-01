@@ -133,17 +133,6 @@ describe('update', () => {
     expect(body).toContain('Summary: Did something')
   })
 
-  it('clears next_action when set to null', async () => {
-    const os = makeOS()
-    await os.update('test-project', { next_action: 'do this' })
-    let fm = parseFilePath(join(VAULT, 'entities/test-project.md')).frontmatter
-    expect(fm['next-action']).toBe('do this')
-
-    await os.update('test-project', { next_action: null })
-    fm = parseFilePath(join(VAULT, 'entities/test-project.md')).frontmatter
-    expect(fm['next-action']).toBeUndefined()
-  })
-
   it('inserts current_state before session log', async () => {
     const os = makeOS()
     await os.update('test-project', { current_state: 'Everything is fine' })
@@ -503,4 +492,142 @@ describe('null clears description and resource', () => {
     expect(fm.description).toBeUndefined()
     expect(fm.resource).toBeUndefined()
   })
+})
+
+describe('slug containment (SEC-1)', () => {
+  const OUTSIDE = join(TMP, 'outside')
+
+  beforeAll(() => {
+    mkdirSync(OUTSIDE, { recursive: true })
+    writeFileSync(join(OUTSIDE, 'secret.md'), '---\nname: Secret\n---\nsensitive content\n')
+  })
+
+  it('read with a traversal slug throws instead of reading outside the vault', async () => {
+    const os = makeOS()
+    await expect(os.read('../../outside/secret')).rejects.toThrow('Invalid slug')
+  })
+
+  it('update with a traversal slug throws and leaves the outside file untouched', async () => {
+    const os = makeOS()
+    const before = readFileSync(join(OUTSIDE, 'secret.md'), 'utf-8')
+    await expect(
+      os.update('../../outside/secret', { description: 'owned' })
+    ).rejects.toThrow('Invalid slug')
+    expect(readFileSync(join(OUTSIDE, 'secret.md'), 'utf-8')).toBe(before)
+  })
+
+  it('promote with a traversal slug throws and does not delete the outside file', async () => {
+    const os = makeOS()
+    await expect(
+      os.promote('../../outside/secret', 'knowledge')
+    ).rejects.toThrow('Invalid slug')
+    expect(existsSync(join(OUTSIDE, 'secret.md'))).toBe(true)
+  })
+
+  it('link with a traversal target throws', async () => {
+    const os = makeOS()
+    await os.create('entity', 'Containment Anchor', { type: 'project' })
+    await expect(
+      os.link('containment-anchor', '../../outside/secret', 'related')
+    ).rejects.toThrow("Target '../../outside/secret' does not exist")
+  })
+
+  it('validate reports malformed refs instead of crashing on them', async () => {
+    const os = makeOS()
+    writeFileSync(
+      join(VAULT, 'entities', 'bad-refs.md'),
+      '---\nname: Bad Refs\ntype: project\nstatus: active\ncreated: "2026-01-01"\nlast-touched: "2026-01-01"\nparent: bad/parent\nrelated:\n  - "[[wiki-link]]"\n---\n'
+    )
+    const report = await os.validate()
+    rmSync(join(VAULT, 'entities', 'bad-refs.md'))
+    const issues = report.broken_slugs.filter(b => b.slug === 'bad-refs')
+    expect(issues.some(b => b.field === 'parent')).toBe(true)
+    expect(issues.some(b => b.field === 'related')).toBe(true)
+  })
+
+  it('reads and updates an entity whose filename contains a space (Obsidian-made)', async () => {
+    const os = makeOS()
+    writeFileSync(
+      join(VAULT, 'entities', 'my note.md'),
+      '---\nname: My Note\ntype: entity\nstatus: active\ncreated: "2026-01-01"\nlast-touched: "2026-01-01"\n---\n\n## Context\n\nhand-made\n'
+    )
+    const read = await os.read('my note', 'full')
+    expect(read.body).toContain('hand-made')
+    await os.update('my note', { description: 'still reachable' })
+    expect(readFileSync(join(VAULT, 'entities', 'my note.md'), 'utf-8')).toContain('still reachable')
+  })
+})
+
+describe('batch commit-stage vs push-stage failure (COR-5 / TST-1)', () => {
+  it('rolls back file writes when the commit stage fails', async () => {
+    const os = makeOS()
+    await os.create('entity', 'Rollback Probe', { type: 'project' })
+    const filePath = join(VAULT, 'entities', 'rollback-probe.md')
+    const before = readFileSync(filePath, 'utf-8')
+
+    // Simulate a raced git process holding the index lock — add/commit will fail
+    const indexLock = join(VAULT, '.git', 'index.lock')
+    writeFileSync(indexLock, '')
+    try {
+      await expect(
+        os.batch([{ op: 'update', slug: 'rollback-probe', fields: { brief: 'should not survive' } }])
+      ).rejects.toThrow()
+    } finally {
+      rmSync(indexLock, { force: true })
+    }
+
+    // The half-applied write must be rolled back...
+    expect(readFileSync(filePath, 'utf-8')).toBe(before)
+    expect(readFileSync(filePath, 'utf-8')).not.toContain('should not survive')
+    // ...including the git index: nothing staged, or the next commit would
+    // publish the rolled-back content under the wrong message
+    const status = await simpleGit(VAULT).status()
+    expect(status.staged).toHaveLength(0)
+  })
+
+  it('rolls back and unstages when the commit itself fails after staging', async () => {
+    const os = makeOS()
+    await os.create('entity', 'Hook Probe', { type: 'project' })
+    // A failing pre-commit hook makes `git add` succeed but `git commit` fail —
+    // the case where content is left staged without a commit
+    const hookPath = join(VAULT, '.git', 'hooks', 'pre-commit')
+    writeFileSync(hookPath, '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+    try {
+      await expect(
+        os.batch([{ op: 'update', slug: 'hook-probe', fields: { brief: 'staged then failed' } }])
+      ).rejects.toThrow()
+    } finally {
+      rmSync(hookPath, { force: true })
+    }
+    const status = await simpleGit(VAULT).status()
+    expect(status.staged).toHaveLength(0)
+    expect(readFileSync(join(VAULT, 'entities', 'hook-probe.md'), 'utf-8')).not.toContain('staged then failed')
+  })
+
+  it('keeps the local commit when only the push stage fails', async () => {
+    const os = createHafez({ vaultPath: VAULT })
+    await os.create('entity', 'Push Fail Probe', { type: 'project' })
+
+    // Point origin at a nonexistent path so push (and pull) fail without conflict
+    const git = simpleGit(VAULT)
+    const originUrl = (await git.getRemotes(true)).find(r => r.name === 'origin')!.refs.push
+    await git.raw(['remote', 'set-url', 'origin', join(TMP, 'no-such-remote.git')])
+    try {
+      await expect(
+        os.batch([{ op: 'update', slug: 'push-fail-probe', fields: { brief: 'survives push failure' } }])
+      ).rejects.toMatchObject({ code: 'GIT_PUSH_FAILED' })
+    } finally {
+      await git.raw(['remote', 'set-url', 'origin', originUrl])
+    }
+
+    // The write is committed locally — file keeps the new content
+    const content = readFileSync(join(VAULT, 'entities', 'push-fail-probe.md'), 'utf-8')
+    expect(content).toContain('survives push failure')
+    const log = await git.log()
+    expect(log.latest?.message).toContain('batch: 1 operations')
+
+    // Heal: push the stranded commit so later tests see a clean state
+    const branch = (await git.branchLocal()).current
+    await git.push('origin', branch)
+  }, 30_000)
 })

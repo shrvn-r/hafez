@@ -13,18 +13,25 @@ export function mergeVaultContent(remote: string, local: string): string {
   const r = parseContent(remote)
   const l = parseContent(local)
 
-  const fm = mergeFrontmatter(r.frontmatter, l.frontmatter)
-  const body = mergeBody(r.body, l.body)
+  // Scalar policy: the side with the newer last-touched wins; local on tie.
+  // Append-only sections (Session Log, Next Actions, Evidence, Sources) and
+  // array/date/count frontmatter fields are always unioned regardless.
+  const localWins =
+    String(l.frontmatter?.['last-touched'] ?? '') >= String(r.frontmatter?.['last-touched'] ?? '')
+
+  const fm = mergeFrontmatter(r.frontmatter, l.frontmatter, localWins)
+  const body = mergeBody(r.body, l.body, localWins)
 
   return serializeFile(fm, body)
 }
 
 function mergeFrontmatter(
   remote: Record<string, any>,
-  local: Record<string, any>
+  local: Record<string, any>,
+  localWins: boolean
 ): Record<string, any> {
-  // Start with remote as base, overlay local (local wins for scalars)
-  const merged = { ...remote, ...local }
+  // Overlay the winning side's scalars on top of the other's
+  const merged = localWins ? { ...remote, ...local } : { ...local, ...remote }
 
   // Date fields: latest wins
   for (const key of DATE_FIELDS) {
@@ -78,13 +85,13 @@ function splitSections(body: string): { preamble: string; sections: Section[] } 
   return { preamble, sections }
 }
 
-function mergeBody(remoteBody: string, localBody: string): string {
+function mergeBody(remoteBody: string, localBody: string, localWins: boolean): string {
   if (remoteBody === localBody) return localBody
 
   const remote = splitSections(remoteBody)
   const local = splitSections(localBody)
 
-  // Build merged sections starting from local
+  // Build merged sections starting from local (local section order is canonical)
   const localHeadings = new Set(local.sections.map(s => s.heading))
   const mergedSections: Section[] = []
 
@@ -94,8 +101,13 @@ function mergeBody(remoteBody: string, localBody: string): string {
       mergedSections.push({ heading: ls.heading, content: mergeSessionLogs(rs.content, ls.content) })
     } else if (ls.heading === '## Next Actions' && rs) {
       mergedSections.push({ heading: ls.heading, content: mergeNextActions(rs.content, ls.content) })
+    } else if ((ls.heading === '## Evidence' || ls.heading === '## Sources') && rs) {
+      // Append-only sections: union lines from both sides, dedup identical
+      mergedSections.push({ heading: ls.heading, content: mergeAppendOnlyLines(rs.content, ls.content) })
+    } else if (rs && !localWins) {
+      // Scalar sections (Brief, Current State, Synthesis, ...): newer side wins
+      mergedSections.push(rs)
     } else {
-      // Brief, Current State, anything else: local wins
       mergedSections.push(ls)
     }
   }
@@ -108,9 +120,24 @@ function mergeBody(remoteBody: string, localBody: string): string {
   }
 
   // Reassemble
-  const preamble = local.preamble || remote.preamble
+  const preamble = localWins
+    ? (local.preamble || remote.preamble)
+    : (remote.preamble || local.preamble)
   const parts = [preamble, ...mergedSections.map(s => `${s.heading}\n\n${s.content}`)].filter(Boolean)
   return parts.join('\n\n')
+}
+
+/** Union merge for append-only free-text sections: local lines first, then
+ *  remote lines not already present. Blank lines are kept only from local. */
+function mergeAppendOnlyLines(remoteContent: string, localContent: string): string {
+  if (remoteContent === localContent) return localContent
+  const localLines = localContent.split('\n')
+  const seen = new Set(localLines.map(l => l.trim()).filter(Boolean))
+  const remoteOnly = remoteContent
+    .split('\n')
+    .filter(l => l.trim() && !seen.has(l.trim()))
+  if (remoteOnly.length === 0) return localContent
+  return [...localLines, ...remoteOnly].join('\n')
 }
 
 function mergeSessionLogs(remoteContent: string, localContent: string): string {

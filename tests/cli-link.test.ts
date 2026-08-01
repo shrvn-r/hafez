@@ -56,23 +56,23 @@ beforeAll(async () => {
 
 afterAll(() => rmSync(TMP, { recursive: true, force: true }))
 
-describe('cli link: positional form is deprecated but still works', () => {
-  it('positional form emits a deprecation warning to stderr', () => {
-    const { stdout, stderr, exitCode } = run('link', 'foo', 'bar', 'related')
-    expect(exitCode).toBe(0)
-    expect(stdout).toContain('Linked foo')
-    expect(stderr).toContain('deprecated')
-    expect(stderr).toContain('--relation related')
+describe('cli link: removed positional relation form is rejected', () => {
+  it('positional relation errors with usage', () => {
+    const { stderr, exitCode } = run('link', 'foo', 'bar', 'related')
+    expect(exitCode).not.toBe(0)
+    expect(stderr).toContain('--relation')
   })
 })
 
 describe('cli link: --relation flag works cleanly', () => {
-  it('--relation flag succeeds with no deprecation warning', () => {
-    // Use `unlink` on the existing parent link to avoid duplicate-link noise.
-    const { stdout, stderr, exitCode } = run('unlink', 'foo', 'bar', '--relation', 'related')
+  it('--relation flag succeeds', () => {
+    const { stdout, stderr, exitCode } = run('link', 'foo', 'bar', '--relation', 'related')
     expect(exitCode).toBe(0)
-    expect(stdout).toContain('Unlinked')
+    expect(stdout).toContain('Linked foo')
     expect(stderr).not.toContain('deprecated')
+    // Clean up the link for later tests
+    const unlinked = run('unlink', 'foo', 'bar', '--relation', 'related')
+    expect(unlinked.exitCode).toBe(0)
   })
 })
 

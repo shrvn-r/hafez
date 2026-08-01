@@ -1,6 +1,6 @@
 // src/index.ts
 import { parseFilePath, serializeFile, slugify, resolveFilePath } from './vault.js'
-import { gitCommitAndPush, gitSync, gitChangelog } from './git.js'
+import { gitCommitAndPush, gitSync, gitChangelog, gitUnstage } from './git.js'
 import { validateEntityFrontmatter, validateKnowledgeFrontmatter, validateSessionLogEntry } from './schema.js'
 import { bodyTemplate, knowledgeBodyTemplate } from './templates.js'
 import { formatSessionLogEntry, countSessionLogEntries, extractOldestSessionLogEntry } from './parser.js'
@@ -13,17 +13,43 @@ import type { Hafez, HafezConfig, ReadDepth, ParsedFile, UpdateFields, CreateEnt
 import { HafezError } from './types.js'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, appendFileSync, unlinkSync } from 'fs'
 import { join, relative, basename } from 'path'
+import { lock as lockVault } from 'proper-lockfile'
 
 export function createHafez(config: HafezConfig): Hafez {
   const { vaultPath, readOnly = false, git: gitConfig = {}, onWrite } = config
 
-  // Per-instance mutex — each createHafez() gets its own lock
+  // Two-level write lock: an in-process promise chain serializes calls within
+  // this instance, then a cross-process advisory lock (proper-lockfile, mkdir
+  // based — works on network/drvfs mounts) serializes against other hafez
+  // processes sharing the vault (concurrent CLIs, a bot, another agent).
   let lockPromise: Promise<void> = Promise.resolve()
   function withLock<T>(fn: () => Promise<T>): Promise<T> {
     const prev = lockPromise
     let release: () => void
     lockPromise = new Promise(resolve => { release = resolve })
-    return prev.then(fn).finally(() => release!())
+    return prev.then(() => withVaultLock(fn)).finally(() => release!())
+  }
+
+  async function withVaultLock<T>(fn: () => Promise<T>): Promise<T> {
+    let releaseVault: (() => Promise<void>) | null = null
+    try {
+      releaseVault = await lockVault(vaultPath, {
+        lockfilePath: join(vaultPath, '.hafez.lock'),
+        stale: 30_000,
+        retries: { retries: 20, minTimeout: 100, maxTimeout: 1_000, randomize: true },
+      })
+    } catch (err) {
+      throw new HafezError(
+        'VAULT_LOCKED',
+        'Vault is locked by another hafez process. Retry when it finishes.',
+        [err instanceof Error ? err.message : String(err)]
+      )
+    }
+    try {
+      return await fn()
+    } finally {
+      try { await releaseVault() } catch { /* stale lock reclaimed by another process */ }
+    }
   }
 
   function entityPath(slug: string): string { return resolveFilePath(vaultPath, slug, 'entity') }
@@ -35,14 +61,19 @@ export function createHafez(config: HafezConfig): Hafez {
     if (existsSync(kp)) return kp
     return null
   }
-  function exists(slug: string): boolean { return findFile(slug) !== null }
+  function exists(slug: string): boolean {
+    // An invalid slug definitionally doesn't exist — reference checks (create
+    // parent/related, link targets, validate) must report "does not exist",
+    // not crash. validate() in particular exists to REPORT malformed refs.
+    try { return findFile(slug) !== null } catch { return false }
+  }
   function today(): string { return new Date().toISOString().slice(0, 10) }
 
   function kindFromPath(filePath: string): 'entity' | 'knowledge' {
     return filePath.includes('/entities/') ? 'entity' : 'knowledge'
   }
 
-  const ENTITY_ONLY_FIELDS: (keyof UpdateFields)[] = ['status', 'next_action', 'add_action', 'add_actions', 'complete_action', 'remove_action', 'clear_actions', 'brief', 'current_state', 'session_log', 'resource']
+  const ENTITY_ONLY_FIELDS: (keyof UpdateFields)[] = ['status', 'add_action', 'add_actions', 'complete_action', 'remove_action', 'clear_actions', 'brief', 'current_state', 'session_log', 'resource']
   const KNOWLEDGE_ONLY_FIELDS: (keyof UpdateFields)[] = ['confidence', 'synthesis', 'add_evidence', 'add_source']
 
   function validateKindFields(kind: 'entity' | 'knowledge', fields: UpdateFields): void {
@@ -155,10 +186,6 @@ export function createHafez(config: HafezConfig): Hafez {
 
   function applyUpdateFields(fm: Record<string, any>, body: string, fields: UpdateFields): { fm: Record<string, any>; body: string; matchedAction?: string } {
     if (fields.status !== undefined) fm.status = fields.status
-    if (fields.next_action !== undefined) {
-      if (fields.next_action === null) delete fm['next-action']
-      else fm['next-action'] = fields.next_action
-    }
     if (fields.current_state !== undefined) {
       body = replaceSection(body, '## Current State', fields.current_state, '## Session Log')
     }
@@ -329,7 +356,6 @@ export function createHafez(config: HafezConfig): Hafez {
       validateKindFields(kind, fields)
 
       let { frontmatter: fm, body } = parseFilePath(filePath)
-      const previousNextAction: string | null = fm['next-action'] ?? null
       const applied = applyUpdateFields(fm, body, fields)
       fm = applied.fm
       body = applied.body
@@ -357,7 +383,7 @@ export function createHafez(config: HafezConfig): Hafez {
       getIndex()!.upsertFromFile(slug, kind)
       regenerateIndexSafe()
       onWrite?.(slug, 'update')
-      return { previous_next_action: previousNextAction, matched_action: applied.matchedAction }
+      return { matched_action: applied.matchedAction }
     })
   }
 
@@ -586,8 +612,8 @@ export function createHafez(config: HafezConfig): Hafez {
 
       // Single git commit for all batch operations
       const uniqueFiles = [...new Set(modifiedFiles)]
-      if (uniqueFiles.length > 0) {
-        await gitCommitAndPush(vaultPath, uniqueFiles, `batch: ${operations.length} operations`, gitConfig)
+
+      const indexAfterBatch = () => {
         for (const slug of affectedSlugs) {
           const fp = findFile(slug)
           if (fp) {
@@ -600,6 +626,34 @@ export function createHafez(config: HafezConfig): Hafez {
           regenerateIndexSafe()
         }
         for (const slug of affectedSlugs) onWrite?.(slug, 'batch')
+      }
+
+      if (uniqueFiles.length > 0) {
+        try {
+          await gitCommitAndPush(vaultPath, uniqueFiles, `batch: ${operations.length} operations`, gitConfig)
+        } catch (err) {
+          if (!(err instanceof HafezError && err.code === 'GIT_PUSH_FAILED')) {
+            // Commit-stage failure (e.g. a raced .git/index.lock): nothing was
+            // committed — restore the captured originals so files, git, and
+            // index stay consistent instead of leaving the batch half-applied.
+            for (const [path, content] of originals) {
+              if (content === null) {
+                try { unlinkSync(path) } catch {}
+              } else {
+                writeFileSync(path, content)
+              }
+            }
+            // Also clear anything the failed commit left staged, or the next
+            // commit would publish the rolled-back content.
+            await gitUnstage(vaultPath, uniqueFiles)
+            throw err
+          }
+          // Push-stage failure: the batch commit exists locally ("changes
+          // saved locally") — keep it and index it, then surface the error.
+          indexAfterBatch()
+          throw err
+        }
+        indexAfterBatch()
       }
       return results
     })
@@ -799,7 +853,8 @@ export function createHafez(config: HafezConfig): Hafez {
       } catch (err) {
         if (target === 'knowledge' && originalContent) {
           writeFileSync(filePath, originalContent)
-          if (knowledgeTarget && existsSync(knowledgeTarget)) unlinkSync(knowledgeTarget)
+          // Never unlink the file we just restored (SEC-4)
+          if (knowledgeTarget && knowledgeTarget !== filePath && existsSync(knowledgeTarget)) unlinkSync(knowledgeTarget)
         }
         throw err
       }

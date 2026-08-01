@@ -94,7 +94,9 @@ function hashContent(content: string): string {
 
 function scanDir(dirPath: string): string[] {
   try {
-    return readdirSync(dirPath).filter(f => f.endsWith('.md')).map(f => join(dirPath, f))
+    // Skip dotfiles: their slugs are rejected by resolveFilePath, so indexing
+    // them would list entities that read/update can never reach.
+    return readdirSync(dirPath).filter(f => f.endsWith('.md') && !f.startsWith('.')).map(f => join(dirPath, f))
   } catch { return [] }
 }
 
@@ -491,30 +493,52 @@ export function createIndex(vaultPath: string, opts?: { readonly?: boolean }): H
   // The db files are a disposable local cache — keep them out of the user's
   // `git status` without dirtying their vault with a tracked .gitignore.
   ensureLocalExclude(vaultPath)
+
+  function removeDbFiles(): void {
+    // The -wal/-shm siblings must go too: a fresh db next to a stale WAL is
+    // itself corrupt.
+    for (const suffix of ['', '-wal', '-shm']) {
+      try { unlinkSync(dbPath + suffix) } catch { /* may not exist */ }
+    }
+  }
+
+  function openDb(): InstanceType<typeof Database> {
+    const fresh = new Database(dbPath)
+    try {
+      fresh.pragma('journal_mode = WAL')
+      fresh.pragma('busy_timeout = 5000')
+      fresh.pragma('foreign_keys = ON')
+      fresh.exec(SCHEMA)
+      return fresh
+    } catch (err) {
+      // Close before the caller unlinks — on filesystems without POSIX
+      // delete-while-open semantics, unlinking an open db fails silently and
+      // recovery would just reopen the same corrupt file.
+      try { fresh.close() } catch { /* already unusable */ }
+      throw err
+    }
+  }
+
   let db: InstanceType<typeof Database>
   try {
-    db = new Database(dbPath)
+    db = openDb()
   } catch {
-    // Corrupted DB — delete and recreate
-    try { unlinkSync(dbPath) } catch {}
-    db = new Database(dbPath)
+    // Corrupted DB (garbage bytes, truncated WAL checkpoint). better-sqlite3
+    // doesn't touch the file until the first statement, so corruption surfaces
+    // at the pragma/exec inside openDb, not at the constructor — the whole
+    // open sequence must be inside this catch. The index is a disposable
+    // cache: delete and rebuild.
+    removeDbFiles()
+    db = openDb()
   }
-  db.pragma('journal_mode = WAL')
-  db.pragma('busy_timeout = 5000')
-  db.pragma('foreign_keys = ON')
-  db.exec(SCHEMA)
 
   // Schema migration: if next_action_count column missing, delete DB and recreate
   try {
     db.prepare('SELECT next_action_count FROM items LIMIT 0').run()
   } catch {
     db.close()
-    unlinkSync(dbPath)
-    db = new Database(dbPath)
-    db.pragma('journal_mode = WAL')
-    db.pragma('busy_timeout = 5000')
-    db.pragma('foreign_keys = ON')
-    db.exec(SCHEMA)
+    removeDbFiles()
+    db = openDb()
   }
 
   // Schema migration: if domain_entity column exists, delete DB and recreate
@@ -522,12 +546,8 @@ export function createIndex(vaultPath: string, opts?: { readonly?: boolean }): H
     db.prepare('SELECT domain_entity FROM items LIMIT 0').run()
     // Column exists — old schema, needs rebuild
     db.close()
-    unlinkSync(dbPath)
-    db = new Database(dbPath)
-    db.pragma('journal_mode = WAL')
-    db.pragma('busy_timeout = 5000')
-    db.pragma('foreign_keys = ON')
-    db.exec(SCHEMA)
+    removeDbFiles()
+    db = openDb()
   } catch {
     // Column doesn't exist — correct schema, continue
   }
@@ -536,12 +556,8 @@ export function createIndex(vaultPath: string, opts?: { readonly?: boolean }): H
   const versionRow = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value: string } | undefined
   if (!versionRow || versionRow.value !== SCHEMA_VERSION) {
     db.close()
-    unlinkSync(dbPath)
-    db = new Database(dbPath)
-    db.pragma('journal_mode = WAL')
-    db.pragma('busy_timeout = 5000')
-    db.pragma('foreign_keys = ON')
-    db.exec(SCHEMA)
+    removeDbFiles()
+    db = openDb()
     db.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?)").run(SCHEMA_VERSION)
   }
 
@@ -587,9 +603,8 @@ export function createIndex(vaultPath: string, opts?: { readonly?: boolean }): H
       return
     }
 
-    // Parse next actions from body (new), fall back to frontmatter (legacy pre-migration)
     const bodyActions = getNextActions(body)
-    const nextAction = bodyActions.length > 0 ? bodyActions[0] : (fm['next-action'] ?? null)
+    const nextAction = bodyActions.length > 0 ? bodyActions[0] : null
     const nextActionCount = bodyActions.length
 
     const brief = getBrief(body)?.slice(0, 300) ?? null

@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { gitCommitAndPush, gitSync } from '../src/git.js'
 import { HafezError } from '../src/types.js'
-import { mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import simpleGit from 'simple-git'
@@ -391,9 +391,9 @@ describe('gitCommitAndPush', () => {
     await git2.commit('remote update both')
     await git2.push('origin', defaultBranch)
 
-    // Local updates both differently
-    writeFileSync(join(LOCAL, file1), mkEntity('A').replace('active', 'paused'))
-    writeFileSync(join(LOCAL, file2), mkEntity('B').replace('active', 'done'))
+    // Local updates both differently (same last-touched as remote — tie, local wins scalars)
+    writeFileSync(join(LOCAL, file1), mkEntity('A').replace('active', 'paused').replace('2026-03-22', '2026-03-23'))
+    writeFileSync(join(LOCAL, file2), mkEntity('B').replace('active', 'done').replace('2026-03-22', '2026-03-23'))
 
     // Should merge successfully
     await gitCommitAndPush(LOCAL, [file1, file2], 'local update both')
@@ -406,6 +406,129 @@ describe('gitCommitAndPush', () => {
     expect(c1).toContain('paused')     // local status wins
     expect(c1).toContain('2026-03-23') // latest date wins
     expect(c2).toContain('done')       // local status wins
+  })
+
+  it('preserves non-conflicting local commits through a semantic merge (COR-1)', async () => {
+    // Regression for the production data-loss bug: the old merge path did
+    // `git reset --hard origin` and re-applied only the conflicting files,
+    // destroying every other unpushed local commit. Forensic patches from
+    // the recovered vault live in specs/forensics/cor1-lost-commits/ (private).
+    const conflictFile = 'entities/cor1-conflict.md'
+    const bystanderFile = 'entities/cor1-bystander.md'
+    const dir = join(LOCAL, 'entities')
+    const dir2 = join(LOCAL2, 'entities')
+    mkdirSync(dir, { recursive: true })
+
+    const initial = [
+      '---',
+      'name: Conflict Target',
+      'type: project',
+      'status: active',
+      'created: "2026-01-01"',
+      'last-touched: "2026-03-22"',
+      '---',
+      '',
+      '## Session Log',
+      '',
+      '### 2026-03-22 — Setup [progress]',
+      'Summary: Initial setup',
+      '',
+    ].join('\n')
+    writeFileSync(join(LOCAL, conflictFile), initial)
+    await gitCommitAndPush(LOCAL, [conflictFile], 'create conflict target')
+
+    // Remote (LOCAL2) adds a session log entry and pushes
+    const git2 = simpleGit(LOCAL2)
+    await git2.pull('origin', defaultBranch)
+    mkdirSync(dir2, { recursive: true })
+    writeFileSync(join(LOCAL2, conflictFile), initial.replace(
+      '## Session Log\n',
+      '## Session Log\n\n### 2026-03-23 — Simorgh [progress]\nSummary: Remote entry\n'
+    ))
+    await git2.add(conflictFile)
+    await git2.commit('remote session log')
+    await git2.push('origin', defaultBranch)
+
+    // LOCAL first commits an unrelated new entity (push blocked — stays local)
+    writeFileSync(join(LOCAL, bystanderFile), '---\nname: Bystander\ntype: project\nstatus: active\ncreated: "2026-01-01"\nlast-touched: "2026-03-23"\n---\n')
+    await gitCommitAndPush(LOCAL, [bystanderFile], 'create bystander', { push: false })
+
+    // ... then makes a conflicting session-log edit and pushes
+    writeFileSync(join(LOCAL, conflictFile), initial.replace(
+      '## Session Log\n',
+      '## Session Log\n\n### 2026-03-23 — Claude [decision]\nSummary: Local entry\n'
+    ))
+    await gitCommitAndPush(LOCAL, [conflictFile], 'local session log')
+
+    // The bystander commit must survive on the branch AND on the remote
+    const git1 = simpleGit(LOCAL)
+    const log = await git1.log()
+    expect(log.all.some(c => c.message === 'create bystander')).toBe(true)
+    expect(existsSync(join(LOCAL, bystanderFile))).toBe(true)
+
+    const bareLog = await simpleGit(BARE).log()
+    expect(bareLog.all.some(c => c.message === 'create bystander')).toBe(true)
+
+    // And the conflict file has both entries
+    const content = readFileSync(join(LOCAL, conflictFile), 'utf-8')
+    expect(content).toContain('Remote entry')
+    expect(content).toContain('Local entry')
+  })
+
+  it('resolves conflicts spanning multiple local commits (multi-step rebase)', async () => {
+    // Two local commits each conflicting with the same remote commit: the
+    // rebase stops twice, and `rebase --continue` exits non-zero at the second
+    // stop. That must be treated as progress, not failure.
+    const fileA = 'entities/multistep-a.md'
+    const fileB = 'entities/multistep-b.md'
+    const dir = join(LOCAL, 'entities')
+    const dir2 = join(LOCAL2, 'entities')
+    mkdirSync(dir, { recursive: true })
+
+    const mk = (name: string, extra = '') => [
+      '---',
+      `name: ${name}`,
+      'type: project',
+      'status: active',
+      'created: "2026-01-01"',
+      'last-touched: "2026-03-22"',
+      '---',
+      '',
+      '## Session Log',
+      extra,
+      '',
+    ].join('\n')
+
+    writeFileSync(join(LOCAL, fileA), mk('Multi A'))
+    writeFileSync(join(LOCAL, fileB), mk('Multi B'))
+    await gitCommitAndPush(LOCAL, [fileA, fileB], 'create multistep entities')
+
+    // Remote edits BOTH files in one commit and pushes
+    const git2 = simpleGit(LOCAL2)
+    await git2.pull('origin', defaultBranch)
+    mkdirSync(dir2, { recursive: true })
+    writeFileSync(join(LOCAL2, fileA), mk('Multi A', '\n### 2026-03-23 — Simorgh [progress]\nSummary: Remote A\n'))
+    writeFileSync(join(LOCAL2, fileB), mk('Multi B', '\n### 2026-03-23 — Simorgh [progress]\nSummary: Remote B\n'))
+    await git2.add([fileA, fileB])
+    await git2.commit('remote edits both')
+    await git2.push('origin', defaultBranch)
+
+    // Local makes TWO separate commits, one per file (push blocked)
+    writeFileSync(join(LOCAL, fileA), mk('Multi A', '\n### 2026-03-23 — Claude [progress]\nSummary: Local A\n'))
+    await gitCommitAndPush(LOCAL, [fileA], 'local edit A', { push: false })
+    writeFileSync(join(LOCAL, fileB), mk('Multi B', '\n### 2026-03-23 — Claude [progress]\nSummary: Local B\n'))
+    await gitCommitAndPush(LOCAL, [fileB], 'local edit B', { push: false })
+
+    // Sync must resolve BOTH conflicted rebase steps, not abort at the second
+    const result = await gitSync(LOCAL)
+    expect(result.pushed).toBe(true)
+
+    const a = readFileSync(join(LOCAL, fileA), 'utf-8')
+    const b = readFileSync(join(LOCAL, fileB), 'utf-8')
+    expect(a).toContain('Remote A')
+    expect(a).toContain('Local A')
+    expect(b).toContain('Remote B')
+    expect(b).toContain('Local B')
   })
 
   it('preserves local commit when merge fails on malformed remote', async () => {

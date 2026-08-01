@@ -1,6 +1,6 @@
 {
   "name": "hafez",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -17,8 +17,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist && tsc",
     "install:local": "mkdir -p ~/.local/bin && ln -sf \"$(pwd)/dist/cli.js\" ~/.local/bin/hafez && rm -f ~/.claude/skills/hafez/SKILL.md && mkdir -p ~/.claude/skills/hafez && cp \"$(pwd)/skill/SKILL.md\" ~/.claude/skills/hafez/SKILL.md",
+    "pretest": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepare": "npm run build"
@@ -27,11 +28,13 @@
     "better-sqlite3": "^12.6.2",
     "gray-matter": "^4.0.3",
     "js-yaml": "^4.1.1",
+    "proper-lockfile": "^4.1.2",
     "simple-git": "^3.33.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "@types/proper-lockfile": "^4.1.4",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.4.0",
     "tsx": "^4.21.0",

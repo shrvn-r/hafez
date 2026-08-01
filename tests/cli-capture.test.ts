@@ -51,15 +51,12 @@ describe('cli capture: new top-level command', () => {
   })
 })
 
-describe('cli create inbox: deprecated alias still works', () => {
-  it('emits a deprecation warning to stderr and creates the file', () => {
-    const { stdout, stderr, exitCode } = run('create', 'inbox', 'Legacy capture via create inbox')
-    expect(exitCode).toBe(0)
-    const slug = stdout.trim()
-    expect(slug).toBe('legacy-capture-via-create-inbox')
-    expect(stderr).toContain('deprecated')
-    expect(stderr).toContain('hafez capture')
-    expect(existsSync(join(VAULT, 'entities', 'legacy-capture-via-create-inbox.md'))).toBe(true)
+describe('cli create inbox: removed alias is rejected', () => {
+  it('errors and creates nothing (use hafez capture instead)', () => {
+    const { stderr, exitCode } = run('create', 'inbox', 'Legacy capture via create inbox')
+    expect(exitCode).not.toBe(0)
+    expect(stderr).toContain('Unknown kind: inbox')
+    expect(existsSync(join(VAULT, 'entities', 'legacy-capture-via-create-inbox.md'))).toBe(false)
   })
 
   it('both paths reach the same handler (output parity)', () => {

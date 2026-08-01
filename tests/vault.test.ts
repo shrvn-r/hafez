@@ -17,6 +17,10 @@ describe('slugify', () => {
   it('collapses multiple hyphens', () => {
     expect(slugify('foo  --  bar')).toBe('foo-bar')
   })
+  it('keeps non-Latin characters instead of collapsing to empty', () => {
+    expect(slugify('日本語のメモ')).toBe('日本語のメモ')
+    expect(slugify('Café Notes')).toBe('café-notes')
+  })
 })
 
 describe('resolveFilePath', () => {
@@ -25,6 +29,29 @@ describe('resolveFilePath', () => {
   })
   it('resolves knowledge path', () => {
     expect(resolveFilePath('/vault', 'my-pattern', 'knowledge')).toBe('/vault/knowledge/my-pattern.md')
+  })
+
+  // SEC-1: slugs are path components — anything that can escape the vault must throw
+  it('rejects path traversal slugs', () => {
+    for (const slug of [
+      '../../outside/secret',
+      '../evil',
+      'a/b',
+      'a\\b',
+      '/etc/passwd',
+      'C:\\evil',
+      '.hidden',
+      '..',
+      '',
+    ]) {
+      expect(() => resolveFilePath('/vault', slug, 'entity'), `slug: ${slug}`).toThrow('Invalid slug')
+    }
+  })
+
+  it('accepts the names a hand-edited vault actually contains', () => {
+    for (const slug of ['simorgh', 'my-pattern', 'v1.0-notes', 'some_slug', 'A-Mixed-Case', 'my note', '日本語のメモ']) {
+      expect(() => resolveFilePath('/vault', slug, 'entity'), `slug: ${slug}`).not.toThrow()
+    }
   })
 })
 

@@ -618,3 +618,32 @@ describe('schema version rebuild', () => {
     check.close()
   })
 })
+
+describe('corrupt DB recovery (COR-3)', () => {
+  it('recovers from a garbage .hafez.db by rebuilding it', () => {
+    let db = createIndex(TMP)
+    db.close()
+
+    const dbPath = join(TMP, '.hafez.db')
+    // Simulate a partial write / kill during WAL checkpoint
+    writeFileSync(dbPath, 'this is not a sqlite database, not even close')
+    writeFileSync(dbPath + '-wal', 'stale wal garbage')
+
+    db = createIndex(TMP)
+    const { items } = db.queryItems({})
+    expect(items.length).toBeGreaterThan(0)
+    db.close()
+  })
+
+  it('read-only open of a garbage .hafez.db degrades to null instead of crashing', () => {
+    const dbPath = join(TMP, '.hafez.db')
+    writeFileSync(dbPath, 'still not a sqlite database')
+
+    const ro = createIndex(TMP, { readonly: true })
+    expect(ro).toBeNull()
+
+    // Heal for subsequent test files' sake
+    const db = createIndex(TMP)
+    db.close()
+  })
+})
