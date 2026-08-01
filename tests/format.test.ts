@@ -1,6 +1,6 @@
 // tests/format.test.ts
 import { describe, it, expect } from 'vitest'
-import { formatEntityHeader, formatKnowledgeHeader, formatQueryTable, formatKnowledgeTable, formatSearchResults, formatValidation } from '../src/cli/format.js'
+import { formatEntityHeader, formatKnowledgeHeader, formatQueryTable, formatKnowledgeTable, formatSearchResults, formatValidation, formatStats } from '../src/cli/format.js'
 
 describe('formatEntityHeader', () => {
   it('renders entity as markdown header block', () => {
@@ -227,5 +227,29 @@ describe('formatValidation', () => {
       total_entities: 10, total_knowledge: 5,
     })
     expect(result).not.toContain('Vault OK')
+  })
+})
+
+describe('formatStats empty-vault nudge', () => {
+  const emptyStats = {
+    counts: { active: 0, paused: 0, done: 0 },
+    by_type: { project: 0, entity: 0, capture: 0 },
+    knowledge_count: 0,
+    stale: [], no_next_action: [], recently_touched: [], recently_created: [],
+  }
+
+  it('points an empty vault at hafez onboard', () => {
+    const result = formatStats(emptyStats as any)
+    expect(result).toContain('hafez onboard')
+  })
+
+  it('stays silent once the vault has entities', () => {
+    const result = formatStats({ ...emptyStats, counts: { active: 1, paused: 0, done: 0 } } as any)
+    expect(result).not.toContain('hafez onboard')
+  })
+
+  it('stays silent for a knowledge-only vault', () => {
+    const result = formatStats({ ...emptyStats, knowledge_count: 2 } as any)
+    expect(result).not.toContain('hafez onboard')
   })
 })

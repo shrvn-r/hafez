@@ -7,6 +7,7 @@ import { HafezError } from '../types.js'
 import { cmdRead, cmdQuery, cmdSearch, cmdCreate, cmdUpdate, cmdLink, cmdUnlink, cmdPromote, cmdValidate, cmdIndexRebuild, cmdBatch, cmdSync, cmdStats, cmdChangelog, cmdDigest, cmdCapture, type CommandOpts } from './commands.js'
 import { cmdSchema } from './commands-schema.js'
 import { renderAgentHelp } from './help-agent.js'
+import { renderOnboard } from './onboard.js'
 import { resolveVaultPath, noVaultMessage, cmdInit } from './resolve-vault.js'
 
 const COMMANDS: Record<string, (os: any, args: string[], opts: CommandOpts) => Promise<string>> = {
@@ -67,6 +68,7 @@ Commands:
   index rebuild              Rebuild the SQLite index
   init --register <path>     Register an existing vault
   init                       Show current vault resolution
+  onboard                    Agent-directed first run: seed the vault, pick integration level
   help --agent               Full API reference for agents
 
 Global flags:
@@ -112,6 +114,12 @@ export async function main(argv: string[]): Promise<void> {
       return
     }
     process.stdout.write(USAGE)
+    return
+  }
+
+  // onboard runs before vault resolution — static agent-directed text
+  if (command === 'onboard') {
+    process.stdout.write(renderOnboard())
     return
   }
 

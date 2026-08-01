@@ -24,12 +24,15 @@ Set up Hafez, an agent-native knowledge vault (github.com/shrvn-r/hafez):
 3. Create my vault — a git repo with entities/ and knowledge/ directories and an
    initial commit. Suggest ~/vault but ask me where I want it first.
 4. Register it: hafez init --register <vault-path>
-5. Install the bundled agent skill: copy skill/SKILL.md from the installed
-   package ("$(npm root -g)/hafez/skill/SKILL.md") to ~/.claude/skills/hafez/SKILL.md
+5. If you are Claude Code, install the bundled skill: copy skill/SKILL.md
+   from the installed package ("$(npm root -g)/hafez/skill/SKILL.md") to
+   ~/.claude/skills/hafez/SKILL.md. Any other harness: skip this — step 7
+   covers integration.
 6. Read hafez help --agent, then verify end-to-end: create a test capture,
    hafez read it back, and show me hafez stats.
-7. Tell me what you set up, and give me three example asks I can use in future
-   sessions to see the vault working (e.g. "what am I working on?").
+7. Run hafez onboard and follow what it prints: interview me to seed the
+   vault with my current projects, then help me choose how deeply to
+   integrate Hafez into my agent setup.
 ```
 
 From then on, just mention your projects by name in any session — the skill
@@ -54,9 +57,13 @@ cd ~/vault && git init && git commit --allow-empty -m "init vault"
 hafez init --register ~/vault           # remember this vault (one-time)
 hafez init                              # show current vault resolution
 
-# Claude Code skill (optional but recommended)
+# Claude Code only (optional): the bundled skill
 mkdir -p ~/.claude/skills/hafez
 cp "$(npm root -g)/hafez/skill/SKILL.md" ~/.claude/skills/hafez/SKILL.md
+
+# Then, in your agent — any harness: "run hafez onboard and follow it" —
+# guided first run (seed the vault with your current projects, choose an
+# integration level)
 ```
 
 Prefer installing without the npm registry? The GitHub release tarball is the
@@ -131,6 +138,7 @@ Links (`parent`, `related`) are validated — they must point at slugs that exis
 | `hafez changelog --since 7.days.ago` | Git-derived change history |
 | `hafez sync` | Pull remote, push local commits (semantic merge on conflicts) |
 | `hafez validate` / `hafez index rebuild` | Integrity check / rebuild the read index |
+| `hafez onboard` | Agent-directed first run: seeding interview + integration setup |
 | `hafez schema [op] [--examples]` | Machine-readable JSON schema for every operation |
 | `hafez export --okf [--out <dir>]` | Read-only OKF v0.1 bundle export |
 
@@ -166,10 +174,16 @@ Writes are serialized through an internal mutex, so a single `Hafez` instance is
 
 ## Agent integration
 
-Hafez is built to be operated by agents:
+Hafez is built to be operated by agents — any agent. The CLI is the whole
+interface, so every harness that can run shell commands integrates the same
+way: through its instructions file — CLAUDE.md for Claude Code, AGENTS.md
+for everything on the [AGENTS.md standard](https://agents.md) (Codex, Cursor,
+Copilot, …). This repo follows the same convention: `AGENTS.md` is canonical
+and `CLAUDE.md` imports it.
 
-- **Claude Code skill** — the package bundles a skill (installed in [Setup](#setup)) covering the full session lifecycle: loading context at session start, vault ops mid-session, and a session-end digest.
+- **`hafez onboard`** — an agent-directed first-run guide: a seeding interview for the empty vault, then a choice of integration level (an always-active block for the harness's global instructions file, or invoke-only).
 - **`hafez help --agent`** — a complete API reference designed to be loaded into an agent's context.
+- **Claude Code skill** — an optional adapter for one harness: the package bundles a skill (installed in [Setup](#setup)) covering the full session lifecycle: loading context at session start, vault ops mid-session, and a session-end digest.
 - **`hafez schema <op> --examples`** — JSON schemas with working examples for every batch operation, so agents can self-correct.
 - **`hafez batch`** — apply a whole session's worth of updates atomically from a single JSON payload. Validation errors report every bad op at once with did-you-mean hints.
 - **Markdown-native output** by default, `--json` everywhere for machine consumption.

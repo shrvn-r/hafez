@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.1.0 — 2026-08-01
+
+First-run onboarding release: a fresh install now has a guided path from
+empty vault to working memory loop, and the docs follow the AGENTS.md
+standard so any agent harness can drive Hafez.
+
+### Highlights
+
+- **`hafez onboard`** — an agent-directed first-run guide in the same
+  spirit as `help --agent`. It walks the agent through a seeding
+  interview (3–7 real projects with descriptions, briefs, and next
+  actions; anything vague becomes a capture, written in one `hafez
+  batch`), then a choice of integration level: an always-active block
+  for the harness's global instructions file, or invoke-only. An empty
+  vault now points to it from `hafez stats`.
+- **Any harness, one interface** — onboarding names both conventions:
+  `~/.claude/CLAUDE.md` for Claude Code, and the harness's global
+  AGENTS.md (e.g. `~/.codex/AGENTS.md`) for everything on the AGENTS.md
+  standard. The bundled Claude Code skill is an optional adapter; the
+  CLI is the whole interface.
+- **AGENTS.md ships** — the repo now follows the AGENTS.md convention
+  itself: `AGENTS.md` is the canonical agent doc and `CLAUDE.md` is a
+  thin import of it, so the two can never drift.
+
+### Fixed
+
+- `npm run install:local` restores the executable bit on `dist/cli.js`
+  before linking — a bare `npm run build` previously left the local
+  symlink pointing at a non-executable file.
+
 ## 1.0.2 — 2026-07-31
 
 Data-safety release. Every fix below was verified against a reproduction

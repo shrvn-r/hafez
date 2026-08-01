@@ -1,6 +1,6 @@
 {
   "name": "hafez",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -18,7 +18,7 @@
   ],
   "scripts": {
     "build": "rm -rf dist && tsc",
-    "install:local": "mkdir -p ~/.local/bin && ln -sf \"$(pwd)/dist/cli.js\" ~/.local/bin/hafez && rm -f ~/.claude/skills/hafez/SKILL.md && mkdir -p ~/.claude/skills/hafez && cp \"$(pwd)/skill/SKILL.md\" ~/.claude/skills/hafez/SKILL.md",
+    "install:local": "chmod +x \"$(pwd)/dist/cli.js\" && mkdir -p ~/.local/bin && ln -sf \"$(pwd)/dist/cli.js\" ~/.local/bin/hafez && rm -f ~/.claude/skills/hafez/SKILL.md && mkdir -p ~/.claude/skills/hafez && cp \"$(pwd)/skill/SKILL.md\" ~/.claude/skills/hafez/SKILL.md",
     "pretest": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",

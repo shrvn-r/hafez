@@ -14,7 +14,7 @@ description: >
 
 All operations use the `hafez` CLI. No file manipulation — the CLI handles reads, writes, validation, and git.
 
-If `hafez` is not installed, or `hafez init` reports no vault, stop and follow the setup in the project README (github.com/shrvn-r/hafez) before using this skill.
+If `hafez` is not installed, or `hafez init` reports no vault, stop and follow the setup in the project README (github.com/shrvn-r/hafez) before using this skill. If the vault exists but is empty, run `hafez onboard` and follow what it prints.
 
 ## CLI Reference
 

@@ -98,6 +98,12 @@ export function formatSearchResults(results: SearchResult[]): string {
 export function formatStats(stats: VaultStats): string {
   const lines: string[] = []
 
+  const totalEntities = stats.counts.active + stats.counts.paused + stats.counts.done
+  if (totalEntities === 0 && stats.knowledge_count === 0) {
+    lines.push('Vault is empty — run `hafez onboard` for the guided first run (seeding interview + agent integration).')
+    lines.push('')
+  }
+
   lines.push('## Status Counts')
   lines.push(`Active: ${stats.counts.active} | Paused: ${stats.counts.paused} | Done: ${stats.counts.done}`)
 

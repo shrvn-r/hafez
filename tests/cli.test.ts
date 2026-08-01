@@ -126,7 +126,7 @@ describe('CLI', () => {
 
   it('help lists every dispatched command', () => {
     const { stdout } = run('help')
-    for (const cmd of ['read', 'query', 'search', 'create', 'capture', 'promote', 'update', 'batch', 'digest', 'sync', 'stats', 'changelog', 'schema', 'validate', 'init', 'help --agent']) {
+    for (const cmd of ['read', 'query', 'search', 'create', 'capture', 'promote', 'update', 'batch', 'digest', 'sync', 'stats', 'changelog', 'schema', 'validate', 'init', 'onboard', 'help --agent']) {
       expect(stdout).toContain(cmd)
     }
   })
