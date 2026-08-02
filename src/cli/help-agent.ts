@@ -60,7 +60,17 @@ listed here, it does not exist — do not invent fields.
 - When in doubt, run \`hafez schema <op>\` before writing a batch. Cheap,
   deterministic, no side effects.
 - Use \`hafez batch --dry-run\` to validate a payload without touching the
-  vault. Same errors, zero filesystem mutation.
+  vault. Same validation as a real apply, zero filesystem mutation.
+
+## Slug contract (create-then-link in one batch)
+
+Slugs are deterministic: slug = slugify(name) — lowercase, non-alphanumeric
+runs collapse to single \`-\`, edges trimmed (\`"Auth Refactor!"\` →
+\`auth-refactor\`). A batch executes sequentially, so later ops may reference
+the slugs of earlier creates in the same batch (\`create\` then \`link\`/\`update\`
+works in one payload). Collisions hard-error — a wrong slug prediction can
+never silently hit an existing document. To verify predictions first:
+\`hafez batch --dry-run\` reports the derived slug for every create op.
 `
 
 function renderOpCatalog(): string {
@@ -97,9 +107,10 @@ function renderCriticalEnums(): string {
 
 function renderBatchExamples(): string {
   const lines = ['<!-- SECTION:batch-examples -->']
-  lines.push('Batch JSON shape — wrap one or more ops in an array and pipe to stdin:')
+  lines.push('Batch JSON shape — wrap one or more ops in an array:')
   lines.push('')
-  lines.push('  echo \'[...]\' | hafez batch')
+  lines.push('  echo \'[...]\' | hafez batch          # POSIX shells')
+  lines.push('  hafez batch --file payload.json     # any platform (PowerShell 5.1 cannot pipe stdin)')
   lines.push('')
   lines.push('Minimal example per op (canonical field names; aliased keys stripped):')
   lines.push('')
@@ -117,9 +128,11 @@ function renderBatchExamples(): string {
 function renderDigestSection(): string {
   const lines = ['<!-- SECTION:digest -->']
   lines.push('Session digest — turn end-of-session context into a batch payload.')
-  lines.push('NOT a batch op: it reads its own JSON from stdin and prints batch JSON.')
+  lines.push('NOT a batch op: it reads its own JSON and prints batch JSON.')
   lines.push('')
   lines.push("  echo '<digest-json>' | hafez digest | hafez batch")
+  lines.push('  # No stdin pipes (PowerShell 5.1): hafez digest --file summary.json > ops.json,')
+  lines.push('  # then hafez batch --file ops.json')
   lines.push('')
   lines.push('Input fields (`hafez schema digest` for the full schema):')
   const schema = getOpSchema('digest')

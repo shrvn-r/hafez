@@ -19,8 +19,9 @@ Claude Code (or any agent with shell access):
 Set up Hafez, an agent-native knowledge vault (github.com/shrvn-r/hafez):
 
 1. Install the CLI (needs Node.js 22+ and git): npm install -g hafez
-   On npm 12+, append --allow-scripts=better-sqlite3 (npm 12 blocks install
-   scripts by default; the SQLite bindings need theirs).
+   On npm 11+, append --allow-scripts=better-sqlite3 (npm 11 blocks install
+   scripts by default; the SQLite bindings need theirs, and the install
+   reports success even when they were skipped).
 2. Check git identity is configured (git config user.name and user.email);
    if not, ask me for a name and email and set them with git config --global.
 3. Create my vault — a git repo with entities/ and knowledge/ directories and an
@@ -40,13 +41,17 @@ Set up Hafez, an agent-native knowledge vault (github.com/shrvn-r/hafez):
 From then on, just mention your projects by name in any session — the skill
 teaches the agent when to read and write the vault, no commands required.
 
+Upgrading from an earlier name of this tool? Remove the old skill directory
+under `~/.claude/skills/` — two installed skills with near-identical
+triggers compete for the same invocations.
+
 ### Manual setup
 
 The same thing by hand:
 
 ```bash
 # Install (Node.js 22+ and git required).
-# On npm 12+, append: --allow-scripts=better-sqlite3
+# On npm 11+, append: --allow-scripts=better-sqlite3
 npm install -g hafez
 
 # One-time, if you've never used git on this machine:
@@ -135,7 +140,7 @@ Links (`parent`, `related`) are validated — they must point at slugs that exis
 | `hafez promote <slug> <entity\|project\|knowledge>` | Promote a capture upward |
 | `hafez update <slug> [flags]` | Status, brief, actions, session log, synthesis, evidence… |
 | `hafez link / unlink <slug> <target> --relation <parent\|related>` | Manage relationships |
-| `hafez batch [--dry-run]` | JSON ops on stdin → atomic multi-op, single git commit, rollback on failure |
+| `hafez batch [--dry-run] [--file payload.json]` | JSON ops (stdin or `--file`) → atomic multi-op, single git commit, rollback on failure; dry-run runs the same validation as apply and reports derived slugs |
 | `hafez stats` | Vault summary: counts, stale items, recents |
 | `hafez changelog --since 7.days.ago` | Git-derived change history |
 | `hafez sync` | Pull remote, push local commits (semantic merge on conflicts) |
@@ -183,7 +188,7 @@ for everything on the [AGENTS.md standard](https://agents.md) (Codex, Cursor,
 Copilot, …). This repo follows the same convention: `AGENTS.md` is canonical
 and `CLAUDE.md` imports it.
 
-- **`hafez onboard`** — an agent-directed first-run guide: a seeding interview for the empty vault, then a choice of integration level (an always-active block for the harness's global instructions file, or invoke-only).
+- **`hafez onboard`** — an agent-directed first-run guide: a seeding interview for the empty vault, then a choice of integration level (an always-active block for the harness's global instructions file, or invoke-only). Re-running it later is the intended way to seed newly started work — on a set-up vault it's just the interview.
 - **`hafez help --agent`** — a complete API reference designed to be loaded into an agent's context.
 - **Claude Code skill** — an optional adapter for one harness: the package bundles a skill (installed in [Setup](#setup)) covering the full session lifecycle: loading context at session start, vault ops mid-session, and a session-end digest.
 - **`hafez schema <op> --examples`** — JSON schemas with working examples for every batch operation, so agents can self-correct.

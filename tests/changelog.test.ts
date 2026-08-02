@@ -34,6 +34,12 @@ beforeAll(async () => {
   writeFileSync(join(TMP, 'knowledge', 'test-note.md'), '---\nname: Note\n---\n')
   await git.add('knowledge/test-note.md')
   await git.commit('create: test-note')
+
+  // Commit 4: scaffold files — must never surface as changelog rows
+  writeFileSync(join(TMP, 'entities', '.gitkeep'), '')
+  writeFileSync(join(TMP, 'knowledge', '.gitkeep'), '')
+  await git.add(['entities/.gitkeep', 'knowledge/.gitkeep'])
+  await git.commit('init vault scaffold')
 })
 
 afterAll(() => rmSync(TMP, { recursive: true, force: true }))
@@ -54,6 +60,22 @@ describe('gitChangelog', () => {
   it('includes knowledge entries', async () => {
     const entries = await gitChangelog(TMP, sinceDate)
     expect(entries.some(e => e.slug === 'test-note' && e.kind === 'knowledge')).toBe(true)
+  })
+
+  it('filters non-.md scaffold files like .gitkeep', async () => {
+    const entries = await gitChangelog(TMP, sinceDate)
+    expect(entries.some(e => e.slug.includes('.gitkeep'))).toBe(false)
+    // and the scaffold commit contributes no rows at all
+    expect(entries.some(e => e.commit_message === 'init vault scaffold')).toBe(false)
+  })
+
+  it('returns today\'s commits for --since <today> (bare date = local midnight)', async () => {
+    // Pins the root fix for "changelog --since <today> returns nothing":
+    // git approxidate fills a date-only --since with the current time of day.
+    const today = new Date()
+    const localDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+    const entries = await gitChangelog(TMP, localDate)
+    expect(entries.length).toBe(3)
   })
 
   it('returns empty for future date', async () => {

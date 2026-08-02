@@ -1,5 +1,62 @@
 # Changelog
 
+## 1.2.0 — 2026-08-02
+
+Fixes from the first fully-external onboarding (Windows 11, PowerShell,
+npm 11): Windows is now a first-class platform, and `batch --dry-run` is
+a real contract — it can no longer pass a payload the apply rejects.
+
+### Highlights
+
+- **`--file` on `batch` and `digest`** — the portable payload path for
+  shells that can't pipe stdin to native executables (Windows PowerShell
+  5.1, where the documented pipe idiom fails). Reads UTF-16LE and BOM'd
+  UTF-8 (what PowerShell redirection actually writes) as well as plain
+  UTF-8. The pipe idiom still works everywhere else.
+- **Dry-run parity, by construction** — `batch --dry-run` now runs the
+  same validate phase as a real apply: kind rules, slug existence, link
+  targets, promote contracts. It also reports the derived slug for every
+  create op, and same-batch references validate — create-then-link works
+  in one payload.
+- **Batch errors localise** — every validation error reads
+  `op[<i>] (<op> <slug>): <message>`, and all errors for a payload
+  surface at once. No more bisecting a 7-op batch by hand.
+- **Slug contract documented** (`hafez help --agent` + skill): slug =
+  deterministic slugify(name); batch executes sequentially, so later ops
+  may reference earlier creates' slugs; collisions hard-error, so a
+  wrong prediction can never hit an existing document.
+- **`add_actions` on create** — seed a project with all its next actions
+  in one create op, matching update's semantics.
+- **Guided bindings failure** — an unbuilt better-sqlite3 module now
+  prints the exact `--allow-scripts=better-sqlite3` remedy instead of a
+  stack trace (npm 11+ blocks install scripts but reports success).
+- **Library:** new `validateBatch()` on the Hafez interface.
+
+### Fixed
+
+- **Windows: every `update` failed.** Entity/knowledge classification
+  used a POSIX-only path check, so on Windows all entities were
+  classified as knowledge notes and every mutating update was rejected.
+  Now separator-agnostic, with win32-path unit tests.
+- **`changelog --since <today>` returned nothing.** git fills a bare
+  date with the current time of day; date-only input is now normalised
+  to local midnight, so "what happened today" works.
+- **`stats` recents are true recency lists.** Same-day ties (the shape
+  of every new vault) now break on git commit time instead of leaking
+  index row order, which produced alphabetical lists missing the newest
+  documents.
+- **`.gitkeep` scaffold files** no longer surface as documents in
+  `changelog`.
+- **README install threshold corrected:** npm 11+ blocks install
+  scripts, not 12+. Also noted: upgraders from this tool's earlier name
+  should remove the old skill directory.
+
+### Changed
+
+- **`batch --dry-run --json`** now returns the full per-op validation
+  report (derived slugs, errors, warnings) instead of
+  `{valid, operations: <count>}`.
+
 ## 1.1.1 — 2026-08-01
 
 Docs release: the README now says what Hafez is for, not just what it is

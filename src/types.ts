@@ -137,6 +137,7 @@ export interface CreateEntityFields {
   tags?: string[]
   brief?: string
   add_action?: string
+  add_actions?: string[]
 }
 
 export interface CreateKnowledgeFields {
@@ -256,6 +257,22 @@ export type BatchOperation =
   | { op: 'unlink'; slug: string; target: string; relation: LinkRelation }
   | { op: 'promote'; slug: string; target: 'entity' | 'project' | 'knowledge' }
 
+// Per-op result of the shared validate phase (dry-run and apply both run it).
+// `slug` is the derived slug for create/capture ops — the dry-run slug oracle.
+export interface BatchOpValidation {
+  index: number
+  op: string
+  slug: string
+  created?: boolean
+  errors: string[]
+  warning?: string
+}
+
+export interface BatchValidationReport {
+  valid: boolean
+  operations: BatchOpValidation[]
+}
+
 // --- Errors ---
 
 export type HafezErrorCode = 'NOT_FOUND' | 'SLUG_EXISTS' | 'VALIDATION_FAILED' | 'GIT_PUSH_FAILED' | 'GIT_COMMIT_FAILED' | 'VAULT_LOCKED'
@@ -294,6 +311,7 @@ export interface Hafez {
   unlink(slug: string, target: string, relation: LinkRelation): Promise<void>
   promote(slug: string, target: 'entity' | 'project' | 'knowledge'): Promise<string>
   batch(operations: BatchOperation[]): Promise<BatchResult[]>
+  validateBatch(operations: BatchOperation[]): Promise<BatchValidationReport>
   sync(): Promise<{ pulled: boolean; pushed: boolean; remote: boolean }>
   children(slug: string): Promise<{ items: QueryResult[], total: number }>
   related_to(slug: string, relation?: string): Promise<{ items: (QueryResult | KnowledgeQueryResult)[], total: number }>

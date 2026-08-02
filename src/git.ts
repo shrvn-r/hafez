@@ -319,10 +319,16 @@ const FILE_STATUS_MAP: Record<string, 'created' | 'updated' | 'deleted'> = {
 export async function gitChangelog(vaultPath: string, since: string): Promise<ChangelogEntry[]> {
   const git: SimpleGit = simpleGit(vaultPath)
 
+  // git approxidate fills a date-only --since with the *current* time of
+  // day, so `--since <today>` means "since right now" and silently returns
+  // nothing — the obvious "what happened today" query was the one that
+  // failed. Normalise bare dates to local midnight.
+  const normalizedSince = /^\d{4}-\d{2}-\d{2}$/.test(since) ? `${since}T00:00:00` : since
+
   let output: string
   try {
     output = await git.raw([
-      'log', `--since=${since}`, '--name-status',
+      'log', `--since=${normalizedSince}`, '--name-status',
       '--pretty=format:%H|%aI|%s', '--', 'entities/', 'knowledge/',
     ])
   } catch {
@@ -350,6 +356,9 @@ export async function gitChangelog(vaultPath: string, since: string): Promise<Ch
       const [, statusChar, filePath] = fileMatch
       const operation = FILE_STATUS_MAP[statusChar]
       if (!operation) continue
+      // Only vault documents — scaffold files (.gitkeep) live in the same
+      // dirs and would otherwise surface as changelog rows.
+      if (!filePath.endsWith('.md')) continue
 
       let kind: 'entity' | 'knowledge'
       let slug: string
@@ -368,6 +377,32 @@ export async function gitChangelog(vaultPath: string, since: string): Promise<Ch
   }
 
   return entries
+}
+
+/**
+ * Latest git time per file (repo-relative, forward-slash paths). Used to
+ * break day-granularity frontmatter ties in stats recents. `modified` maps
+ * each file to its most recent commit; `added` to the commit that added it.
+ * Files with no history (not yet committed) are absent from the map.
+ */
+export async function gitFileTimes(vaultPath: string, mode: 'modified' | 'added'): Promise<Map<string, string>> {
+  const git: SimpleGit = simpleGit(vaultPath)
+  let output: string
+  try {
+    const args = ['log', '--pretty=format:%x00%aI', '--name-only', '--', 'entities/', 'knowledge/']
+    if (mode === 'added') args.splice(1, 0, '--diff-filter=A')
+    output = await git.raw(args)
+  } catch {
+    return new Map() // no git history
+  }
+  const times = new Map<string, string>()
+  let current = ''
+  for (const line of output.split('\n')) {
+    if (line.startsWith('\0')) { current = line.slice(1); continue }
+    const file = line.trim()
+    if (file && !times.has(file)) times.set(file, current) // first hit = newest
+  }
+  return times
 }
 
 export async function gitCommitAndPush(

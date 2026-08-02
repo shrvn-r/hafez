@@ -17,7 +17,8 @@ export const INTEGRATION_SNIPPET = `## Hafez — Session Memory
 - Mid-session: new workstream -> create an entity. Durable insight -> create
   or update a knowledge note (search first). User mentions a project by
   name -> check if it's a Hafez entity. Use \`hafez batch\` for 2+ mutations.
-- Session end: record a digest (\`hafez digest | hafez batch\`) with the
+- Session end: record a digest (\`hafez digest | hafez batch\`; on shells
+  that can't pipe, e.g. PowerShell 5.1: \`--file\` on both) with the
   entities touched, decisions made, and a short narrative.
 - Knowledge boundary: useful beyond this repo/session -> vault knowledge
   note. Specific to one repo's code -> that repo's own docs, not the vault.`
@@ -32,6 +33,11 @@ Prerequisites: \`hafez init\` resolves a vault, and you have read
 \`hafez help --agent\` (do that now if not). The CLI is the whole interface —
 no other pieces are required. If your harness is Claude Code, also install
 the bundled skill — see the README Setup (github.com/shrvn-r/hafez).
+
+Re-running onboard is normal and intended: on a vault that is already set
+up and integrated, skip Step 2 and use Step 1 as a seeding interview for
+whatever is new since last time. Seed current, active work — seeding never
+means documenting the past; using the vault as you go stays primary.
 
 ## Step 1 — Seed the vault
 

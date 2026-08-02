@@ -286,20 +286,23 @@ describe('batch', () => {
     expect(fm.confidence).toBe('pattern')
   })
 
-  it('rejects entity-only fields on knowledge in batch', async () => {
+  it('rejects entity-only fields on knowledge in batch, localised to the op', async () => {
     const os = makeOS()
     await os.create('knowledge', 'Batch Kind Guard Test', {}).catch(() => {})
-    await expect(os.batch([
+    const err = await os.batch([
       { op: 'update', slug: 'batch-kind-guard-test', fields: { status: 'done' } as any },
-    ])).rejects.toThrow('entity-only')
+    ]).catch(e => e)
+    expect(err.message).toContain('Batch failed validation')
+    expect(err.details[0]).toMatch(/^op\[0\] \(update batch-kind-guard-test\): .*entity-only/)
   })
 
-  it('rejects batch update with non-existent related slug', async () => {
+  it('rejects batch update with non-existent related slug, localised to the op', async () => {
     const os = makeOS()
     await os.create('entity', 'Batch Related Test', { type: 'entity' })
-    await expect(os.batch([
+    const err = await os.batch([
       { op: 'update', slug: 'batch-related-test', fields: { related: ['non-existent-slug'] } },
-    ])).rejects.toThrow(/does not exist/)
+    ]).catch(e => e)
+    expect(err.details[0]).toMatch(/^op\[0\] \(update batch-related-test\): .*'non-existent-slug' does not exist/)
   })
 })
 

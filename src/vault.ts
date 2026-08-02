@@ -32,6 +32,14 @@ export function resolveFilePath(vaultPath: string, slug: string, kind: 'entity' 
   return join(vaultPath, dir, `${slug}.md`)
 }
 
+// Separator-agnostic: OS paths use '/' or '\' depending on platform, and a
+// POSIX-only check silently classifies every entity as knowledge on Windows
+// (all updates then fail on kind rules). Exported pure so win32 paths are
+// unit-testable from any platform.
+export function kindFromPath(filePath: string): 'entity' | 'knowledge' {
+  return /[/\\]entities[/\\]/.test(filePath) ? 'entity' : 'knowledge'
+}
+
 export function slugExists(vaultPath: string, slug: string): boolean {
   return existsSync(resolveFilePath(vaultPath, slug, 'entity'))
     || existsSync(resolveFilePath(vaultPath, slug, 'knowledge'))

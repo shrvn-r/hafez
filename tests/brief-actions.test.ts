@@ -112,6 +112,37 @@ describe('Next Actions via update()', () => {
   })
 })
 
+describe('Next Actions on create (add_actions parity with update)', () => {
+  // Seeding a project with N actions used to force create + follow-up
+  // update, because create only accepted single add_action.
+  it('create() accepts add_actions array', async () => {
+    const os = makeOS()
+    await os.create('entity', 'Seeded Project', {
+      type: 'project',
+      add_actions: ['First task @dev', 'Second task @dev', 'Third task @dev'],
+    })
+    const { body } = await os.read('seeded-project', 'full')
+    expect(body).toContain('- [ ] First task @dev')
+    expect(body).toContain('- [ ] Second task @dev')
+    expect(body).toContain('- [ ] Third task @dev')
+  })
+
+  it('batch create accepts add_actions array', async () => {
+    const os = makeOS()
+    await os.batch([
+      { op: 'create', kind: 'entity', name: 'Batch Seeded Project', fields: {
+        type: 'project',
+        add_action: 'Single one @dev',
+        add_actions: ['Array one @dev', 'Array two @dev'],
+      } },
+    ])
+    const { body } = await os.read('batch-seeded-project', 'full')
+    expect(body).toContain('- [ ] Single one @dev')
+    expect(body).toContain('- [ ] Array one @dev')
+    expect(body).toContain('- [ ] Array two @dev')
+  })
+})
+
 describe('Query with body-parsed next actions', () => {
   it('query returns first unchecked action and count', async () => {
     const os = makeOS()

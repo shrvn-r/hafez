@@ -1,8 +1,8 @@
 // tests/vault.test.ts
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { parseFilePath, parseContent, serializeFile, slugify, resolveFilePath } from '../src/vault.js'
+import { parseFilePath, parseContent, serializeFile, slugify, resolveFilePath, kindFromPath } from '../src/vault.js'
 import { writeFileSync, mkdirSync, rmSync } from 'fs'
-import { join } from 'path'
+import { join, posix, win32 } from 'path'
 import { tmpdir } from 'os'
 
 const TMP = join(tmpdir(), 'hafez-test-vault-' + Date.now())
@@ -52,6 +52,32 @@ describe('resolveFilePath', () => {
     for (const slug of ['simorgh', 'my-pattern', 'v1.0-notes', 'some_slug', 'A-Mixed-Case', 'my note', '日本語のメモ']) {
       expect(() => resolveFilePath('/vault', slug, 'entity'), `slug: ${slug}`).not.toThrow()
     }
+  })
+})
+
+describe('kindFromPath', () => {
+  // Regression for the Windows update blocker: a POSIX-only separator check
+  // classified every entity as knowledge on win32, so every mutating update
+  // failed on entity-only kind rules. Paths built with path.win32/path.posix
+  // exercise both platforms from any host OS.
+  it('classifies POSIX paths', () => {
+    expect(kindFromPath(posix.join('/vault', 'entities', 'simorgh.md'))).toBe('entity')
+    expect(kindFromPath(posix.join('/vault', 'knowledge', 'my-pattern.md'))).toBe('knowledge')
+  })
+
+  it('classifies win32 paths', () => {
+    expect(kindFromPath(win32.join('C:\\vault', 'entities', 'simorgh.md'))).toBe('entity')
+    expect(kindFromPath(win32.join('C:\\vault', 'knowledge', 'my-pattern.md'))).toBe('knowledge')
+  })
+
+  it('classifies mixed-separator paths (drvfs/WSL)', () => {
+    expect(kindFromPath('C:\\Users\\x\\vault/entities/simorgh.md')).toBe('entity')
+    expect(kindFromPath('/mnt/c/vault\\entities\\simorgh.md')).toBe('entity')
+  })
+
+  it('does not match "entities" as a filename or slug substring', () => {
+    expect(kindFromPath(win32.join('C:\\vault', 'knowledge', 'entities.md'))).toBe('knowledge')
+    expect(kindFromPath(posix.join('/vault', 'knowledge', 'legal-entities-note.md'))).toBe('knowledge')
   })
 })
 

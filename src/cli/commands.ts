@@ -1,5 +1,6 @@
 // src/cli/commands.ts
 import { z } from 'zod'
+import { readFileSync } from 'fs'
 import type { Hafez, ReadDepth, EntityType, QueryFilter, ConfidenceLevel, EntityStatus, CreateEntityFields, BatchOperation, KnowledgeQueryOpts, QueryResult, KnowledgeQueryResult } from '../types.js'
 import { HafezError } from '../types.js'
 import {
@@ -360,6 +361,7 @@ const CreateEntityFieldsSchema = z.object({
   tags: z.array(z.string()).optional(),
   brief: z.string().optional(),
   add_action: z.string().optional(),
+  add_actions: z.array(z.string()).optional(),
 }).strict()
 
 const CreateKnowledgeFieldsSchema = z.object({
@@ -509,6 +511,22 @@ export function parseBatchInput(json: string): BatchOperation[] {
   return operations
 }
 
+// --file payload reader. Exists because Windows PowerShell 5.1 cannot pipe
+// stdin to native executables — the documented pipe idiom fails there, so a
+// file is the portable session-end path. PowerShell's own redirection writes
+// UTF-16LE (and other tools write BOM'd UTF-8), so decode both rather than
+// trading the pipe footgun for an encoding one.
+function readPayloadFile(path: string): string {
+  let buf: Buffer
+  try {
+    buf = readFileSync(path)
+  } catch {
+    throw new HafezError('VALIDATION_FAILED', `Cannot read --file: ${path}`)
+  }
+  if (buf[0] === 0xff && buf[1] === 0xfe) return buf.toString('utf16le').replace(/^\uFEFF/, '')
+  return buf.toString('utf-8').replace(/^\uFEFF/, '')
+}
+
 function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = ''
@@ -521,14 +539,36 @@ function readStdin(): Promise<string> {
 
 export async function cmdBatch(os: Hafez, args: string[], opts: CommandOpts = {}): Promise<string> {
   const dryRun = args.includes('--dry-run')
-  const input = await readStdin()
+  const file = getFlag(args, '--file')
+  const input = file ? readPayloadFile(file) : await readStdin()
   if (!input.trim()) {
-    throw new HafezError('VALIDATION_FAILED', 'No input received. Pipe JSON array to stdin: echo \'[...]\' | hafez batch')
+    throw new HafezError('VALIDATION_FAILED', 'No input received. Pipe JSON array to stdin (echo \'[...]\' | hafez batch) or pass --file payload.json')
   }
   const operations = parseBatchInput(input)
   if (dryRun) {
-    if (opts.json) return jsonOut({ valid: true, operations: operations.length })
-    return `Batch valid: ${operations.length} operations would be applied`
+    // Same validate phase as apply — dry-run can never green-light a payload
+    // apply rejects. Reports derived slugs so agents can predict create slugs.
+    const report = await os.validateBatch(operations)
+    if (opts.json) return jsonOut(report)
+    if (!report.valid) {
+      const invalidCount = report.operations.filter(o => o.errors.length > 0).length
+      const lines = report.operations.flatMap(o => o.errors.map(e => `op[${o.index}] (${o.op} ${o.slug}): ${e}`))
+      throw new HafezError(
+        'VALIDATION_FAILED',
+        `Batch invalid: ${invalidCount} of ${operations.length} operation${operations.length === 1 ? '' : 's'} failed validation (0 would be applied)`,
+        lines,
+      )
+    }
+    const out = [`Batch valid: ${operations.length} operations would be applied`]
+    const creates = report.operations.filter(o => o.created)
+    if (creates.length > 0) {
+      out.push('Derived slugs:')
+      for (const c of creates) out.push(`  op[${c.index}] ${c.op} → ${c.slug}`)
+    }
+    for (const o of report.operations) {
+      if (o.warning) out.push(`Warning: op[${o.index}] ${o.warning}`)
+    }
+    return out.join('\n')
   }
   const results = await os.batch(operations)
   if (opts.json) return jsonOut(results)
@@ -538,11 +578,11 @@ export async function cmdBatch(os: Hafez, args: string[], opts: CommandOpts = {}
   return output
 }
 
-export async function cmdDigest(os: Hafez, _args: string[], _opts: CommandOpts = {}): Promise<string> {
-  // Read stdin — reuses the existing readStdin() defined in this file
-  const raw = await readStdin()
+export async function cmdDigest(os: Hafez, args: string[], _opts: CommandOpts = {}): Promise<string> {
+  const file = getFlag(args, '--file')
+  const raw = file ? readPayloadFile(file) : await readStdin()
   if (!raw.trim()) {
-    throw new Error('No input received. Pipe JSON object to stdin: echo \'{"entities_touched":...}\' | hafez digest')
+    throw new Error('No input received. Pipe JSON object to stdin (echo \'{"entities_touched":...}\' | hafez digest) or pass --file summary.json')
   }
 
   // Parse JSON

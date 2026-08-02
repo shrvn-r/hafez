@@ -1,6 +1,6 @@
 // src/index.ts
-import { parseFilePath, serializeFile, slugify, resolveFilePath } from './vault.js'
-import { gitCommitAndPush, gitSync, gitChangelog, gitUnstage } from './git.js'
+import { parseFilePath, serializeFile, slugify, resolveFilePath, kindFromPath } from './vault.js'
+import { gitCommitAndPush, gitSync, gitChangelog, gitUnstage, gitFileTimes } from './git.js'
 import { validateEntityFrontmatter, validateKnowledgeFrontmatter, validateSessionLogEntry } from './schema.js'
 import { bodyTemplate, knowledgeBodyTemplate } from './templates.js'
 import { formatSessionLogEntry, countSessionLogEntries, extractOldestSessionLogEntry } from './parser.js'
@@ -9,7 +9,7 @@ import { queryEntities, queryChildren, queryRelatedTo, queryKnowledge, queryUnif
 import { getContract } from './contracts.js'
 import { createIndex, type HafezIndex } from './db.js'
 import { generateVaultIndex } from './knowledge-index.js'
-import type { Hafez, HafezConfig, ReadDepth, ParsedFile, UpdateFields, CreateEntityFields, CreateKnowledgeFields, QueryFilter, EntityType, EntityQueryOpts, KnowledgeQueryOpts, LinkRelation, ConfidenceLevel, QueryResult, KnowledgeQueryResult, UnifiedResult, ValidationReport, BatchOperation, BatchResult, SearchResult, VaultStats } from './types.js'
+import type { Hafez, HafezConfig, ReadDepth, ParsedFile, UpdateFields, CreateEntityFields, CreateKnowledgeFields, QueryFilter, EntityType, EntityQueryOpts, KnowledgeQueryOpts, LinkRelation, ConfidenceLevel, QueryResult, KnowledgeQueryResult, UnifiedResult, ValidationReport, BatchOperation, BatchResult, BatchOpValidation, BatchValidationReport, SearchResult, VaultStats } from './types.js'
 import { HafezError } from './types.js'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, appendFileSync, unlinkSync } from 'fs'
 import { join, relative, basename } from 'path'
@@ -69,10 +69,6 @@ export function createHafez(config: HafezConfig): Hafez {
   }
   function today(): string { return new Date().toISOString().slice(0, 10) }
 
-  function kindFromPath(filePath: string): 'entity' | 'knowledge' {
-    return filePath.includes('/entities/') ? 'entity' : 'knowledge'
-  }
-
   const ENTITY_ONLY_FIELDS: (keyof UpdateFields)[] = ['status', 'add_action', 'add_actions', 'complete_action', 'remove_action', 'clear_actions', 'brief', 'current_state', 'session_log', 'resource']
   const KNOWLEDGE_ONLY_FIELDS: (keyof UpdateFields)[] = ['confidence', 'synthesis', 'add_evidence', 'add_source']
 
@@ -101,18 +97,20 @@ export function createHafez(config: HafezConfig): Hafez {
     }
   }
 
-  // Shared by create() and batch() so optional fields can't silently diverge
-  // between the two paths (see CLAUDE.md Validation Gotchas).
-  function buildEntityFrontmatter(name: string, ef: CreateEntityFields): Record<string, any> {
+  // Shared by create(), batch(), and the batch validate phase so optional
+  // fields can't silently diverge between paths (see CLAUDE.md Validation
+  // Gotchas). `existsFn` is pluggable so validateBatchCore can supply a
+  // simulation-aware check (same-batch creates count as existing).
+  function buildEntityFrontmatter(name: string, ef: CreateEntityFields, existsFn: (slug: string) => boolean = exists): Record<string, any> {
     const fm: Record<string, any> = { name, type: ef.type, status: 'active', created: today(), 'last-touched': today() }
     if (ef.domain?.length) fm.domain = ef.domain
     if (ef.parent) {
-      if (!exists(ef.parent)) throw new HafezError('VALIDATION_FAILED', `Parent '${ef.parent}' does not exist`)
+      if (!existsFn(ef.parent)) throw new HafezError('VALIDATION_FAILED', `Parent '${ef.parent}' does not exist`)
       fm.parent = ef.parent
     }
     if (ef.related?.length) {
       for (const r of ef.related) {
-        if (!exists(r)) throw new HafezError('VALIDATION_FAILED', `Related slug '${r}' does not exist`)
+        if (!existsFn(r)) throw new HafezError('VALIDATION_FAILED', `Related slug '${r}' does not exist`)
       }
       fm.related = ef.related
     }
@@ -124,12 +122,22 @@ export function createHafez(config: HafezConfig): Hafez {
     return fm
   }
 
-  function buildKnowledgeFrontmatter(name: string, kf: CreateKnowledgeFields): Record<string, any> {
+  // Shared by create() and batch() like buildEntityFrontmatter — body-side
+  // optional fields (brief, actions) must behave identically in both paths.
+  function buildEntityBody(ef: CreateEntityFields): string {
+    let body = bodyTemplate(ef.type, { purpose: ef.purpose })
+    if (ef.brief) body = setBrief(body, ef.brief)
+    if (ef.add_action) body = addNextAction(body, ef.add_action)
+    for (const action of ef.add_actions ?? []) body = addNextAction(body, action)
+    return body
+  }
+
+  function buildKnowledgeFrontmatter(name: string, kf: CreateKnowledgeFields, existsFn: (slug: string) => boolean = exists): Record<string, any> {
     const fm: Record<string, any> = { name, confidence: 'observation', 'reinforcement-count': 0, created: today() }
     if (kf.domain?.length) fm.domain = kf.domain
     if (kf.related?.length) {
       for (const r of kf.related) {
-        if (!exists(r)) throw new HafezError('VALIDATION_FAILED', `Related slug '${r}' does not exist`)
+        if (!existsFn(r)) throw new HafezError('VALIDATION_FAILED', `Related slug '${r}' does not exist`)
       }
       fm.related = kf.related
     }
@@ -289,9 +297,7 @@ export function createHafez(config: HafezConfig): Hafez {
         const ef = fields as CreateEntityFields
         const fm = buildEntityFrontmatter(name, ef)
 
-        let body = bodyTemplate(ef.type, { purpose: ef.purpose })
-        if (ef.brief) body = setBrief(body, ef.brief)
-        if (ef.add_action) body = addNextAction(body, ef.add_action)
+        let body = buildEntityBody(ef)
         const filePath = entityPath(slug)
         mkdirSync(join(vaultPath, 'entities'), { recursive: true })
         body = syncRelatedSection(body, fm)
@@ -439,9 +445,165 @@ export function createHafez(config: HafezConfig): Hafez {
     })
   }
 
+  // "Recent" with day-granularity dates: primary sort is the frontmatter day,
+  // ties break on git commit time (the real recency signal), then name for
+  // files with no commit history yet. Without this the top-5 lists leak
+  // SQLite row order — a brand-new vault (everything same-day) showed
+  // alphabetical-and-missing-newest lists.
+  async function rankRecents<T extends { slug: string; name: string }>(
+    rows: T[],
+    dateKey: 'last_touched' | 'created',
+    mode: 'modified' | 'added',
+  ): Promise<T[]> {
+    const day = (r: T) => (r as Record<string, any>)[dateKey] as string
+    if (rows.length <= 1) return rows
+    // Everything sharing the 5th row's day (or newer) could land in the top 5
+    const cutoffDay = day(rows[Math.min(4, rows.length - 1)])
+    const candidates = rows.filter(r => day(r) >= cutoffDay)
+    const hasTies = new Set(candidates.map(day)).size < candidates.length
+    if (!hasTies) return rows.slice(0, 5)
+    const times = await gitFileTimes(vaultPath, mode)
+    const gitTime = (r: T) => times.get(`entities/${r.slug}.md`) ?? ''
+    candidates.sort((a, b) => {
+      const dayCmp = day(b).localeCompare(day(a))
+      if (dayCmp !== 0) return dayCmp
+      const gitCmp = gitTime(b).localeCompare(gitTime(a)) // '' (uncommitted) sorts last
+      if (gitCmp !== 0) return gitCmp
+      return a.name.localeCompare(b.name)
+    })
+    return candidates.slice(0, 5)
+  }
+
+  // Shared validate phase — dry-run and apply both run this, so dry-run can
+  // never pass a payload apply rejects (parity by construction). Simulates
+  // creates so same-batch references validate: batch executes sequentially,
+  // so op N really does see op 1's creates on disk at apply time.
+  function validateBatchCore(operations: BatchOperation[]): BatchValidationReport {
+    // slug → what it would be after earlier ops in this batch
+    const simulated = new Map<string, { kind: 'entity' | 'knowledge'; type: string }>()
+    const simulatedSessions = new Set<string>()
+
+    const resolve = (slug: string): { kind: 'entity' | 'knowledge'; type: string } | null => {
+      const sim = simulated.get(slug)
+      if (sim) return sim
+      const fp = findFile(slug)
+      if (!fp) return null
+      const kind = kindFromPath(fp)
+      if (kind === 'knowledge') return { kind, type: 'knowledge' }
+      try { return { kind, type: parseFilePath(fp).frontmatter.type } } catch { return { kind, type: 'entity' } }
+    }
+    const existsAnywhere = (slug: string) => simulated.has(slug) || exists(slug)
+
+    const report: BatchOpValidation[] = []
+    for (const [index, op] of operations.entries()) {
+      const errors: string[] = []
+      let warning: string | undefined
+      let slug: string
+      let created = false
+      const pushErr = (err: unknown) => {
+        const e = err as HafezError
+        errors.push(e.details?.length ? `${e.message}: ${e.details.join('; ')}` : e.message)
+      }
+
+      if (op.op === 'update') {
+        slug = op.slug
+        const target = resolve(op.slug)
+        if (!target) errors.push(`'${op.slug}' not found`)
+        else {
+          try { validateKindFields(target.kind, op.fields) } catch (err) { pushErr(err) }
+        }
+        if (op.fields.session_log) {
+          const logErrors = validateSessionLogEntry(op.fields.session_log)
+          if (logErrors.length > 0) errors.push(`Invalid session log entry: ${logErrors.join('; ')}`)
+        }
+        if (op.fields.related) {
+          for (const r of op.fields.related) {
+            if (!existsAnywhere(r)) errors.push(`Related slug '${r}' does not exist`)
+          }
+        }
+
+      } else if (op.op === 'create' && op.kind === 'session') {
+        slug = slugify(op.name)
+        if (exists(slug) || existsSync(join(vaultPath, 'sessions', `${slug}.md`)) || simulatedSessions.has(slug)) {
+          warning = `session '${slug}' already exists — op will be skipped (batch continues)`
+        } else {
+          simulatedSessions.add(slug)
+          created = true
+        }
+
+      } else if (op.op === 'create') {
+        slug = slugify(op.name)
+        if (existsAnywhere(slug)) errors.push(`Slug '${slug}' already exists`)
+        if (op.kind === 'entity') {
+          try { buildEntityFrontmatter(op.name, op.fields, existsAnywhere) } catch (err) { pushErr(err) }
+          simulated.set(slug, { kind: 'entity', type: op.fields.type })
+        } else {
+          try { buildKnowledgeFrontmatter(op.name, (op.fields || {}) as CreateKnowledgeFields, existsAnywhere) } catch (err) { pushErr(err) }
+          simulated.set(slug, { kind: 'knowledge', type: 'knowledge' })
+        }
+        created = errors.length === 0
+
+      } else if (op.op === 'capture') {
+        slug = slugify(op.name)
+        if (existsAnywhere(slug)) errors.push(`Slug '${slug}' already exists`)
+        simulated.set(slug, { kind: 'entity', type: 'capture' })
+        created = errors.length === 0
+
+      } else if (op.op === 'link') {
+        slug = op.slug
+        if (!resolve(op.slug)) errors.push(`'${op.slug}' not found`)
+        if (!existsAnywhere(op.target)) errors.push(`Target '${op.target}' does not exist`)
+
+      } else if (op.op === 'unlink') {
+        slug = op.slug
+        if (!resolve(op.slug)) errors.push(`'${op.slug}' not found`)
+
+      } else {
+        // promote
+        slug = op.slug
+        const cur = resolve(op.slug)
+        if (!cur) errors.push(`'${op.slug}' not found`)
+        else {
+          const currentType = cur.kind === 'knowledge' ? 'knowledge' : cur.type
+          try {
+            const contract = getContract(currentType)
+            if (!contract.canPromoteTo.includes(op.target)) {
+              errors.push(`Cannot promote ${currentType} to ${op.target}. Valid targets: ${contract.canPromoteTo.join(', ') || 'none (terminal type)'}`)
+            } else {
+              simulated.set(op.slug, op.target === 'knowledge' ? { kind: 'knowledge', type: 'knowledge' } : { kind: 'entity', type: op.target })
+            }
+          } catch (err) { pushErr(err) }
+        }
+      }
+
+      const entry: BatchOpValidation = { index, op: op.op, slug, errors }
+      if (created) entry.created = true
+      if (warning) entry.warning = warning
+      report.push(entry)
+    }
+
+    return { valid: report.every(o => o.errors.length === 0), operations: report }
+  }
+
+  function formatOpErrors(report: BatchValidationReport): string[] {
+    return report.operations.flatMap(o => o.errors.map(e => `op[${o.index}] (${o.op} ${o.slug}): ${e}`))
+  }
+
   async function batch(operations: BatchOperation[]): Promise<BatchResult[]> {
     if (readOnly) throw new HafezError('VALIDATION_FAILED', 'Hafez instance is read-only')
     return withLock(async () => {
+      // Validate the whole payload before touching anything — all errors
+      // surface at once, localised to their op.
+      const validation = validateBatchCore(operations)
+      if (!validation.valid) {
+        const invalidCount = validation.operations.filter(o => o.errors.length > 0).length
+        throw new HafezError(
+          'VALIDATION_FAILED',
+          `Batch failed validation: ${invalidCount} invalid operation${invalidCount === 1 ? '' : 's'} (0 of ${operations.length} applied)`,
+          formatOpErrors(validation),
+        )
+      }
+
       // Capture originals for rollback
       const originals = new Map<string, string | null>()
       function captureOriginal(filePath: string) {
@@ -454,8 +616,10 @@ export function createHafez(config: HafezConfig): Hafez {
       const affectedSlugs: string[] = []
       const results: BatchResult[] = []
 
+      let currentOp = -1
       try {
         for (const op of operations) {
+          currentOp++
           if (op.op === 'update') {
             const filePath = findFile(op.slug)
             if (!filePath) throw new HafezError('VALIDATION_FAILED', `'${op.slug}' not found`)
@@ -511,9 +675,7 @@ export function createHafez(config: HafezConfig): Hafez {
             if (op.kind === 'entity') {
               const ef = op.fields
               const fm = buildEntityFrontmatter(op.name, ef)
-              let entBody = bodyTemplate(ef.type, { purpose: ef.purpose })
-              if (ef.brief) entBody = setBrief(entBody, ef.brief)
-              if (ef.add_action) entBody = addNextAction(entBody, ef.add_action)
+              let entBody = buildEntityBody(ef)
               const filePath = entityPath(slug)
               captureOriginal(filePath)
               mkdirSync(join(vaultPath, 'entities'), { recursive: true })
@@ -606,6 +768,14 @@ export function createHafez(config: HafezConfig): Hafez {
           } else {
             writeFileSync(path, content)
           }
+        }
+        // Localise: which op failed, by index and slug/name. The validate
+        // phase above catches semantic errors pre-execution; this covers
+        // residual execution-time failures (races, disk errors).
+        if (err instanceof HafezError && currentOp >= 0) {
+          const op = operations[currentOp]
+          const label = 'slug' in op ? op.slug : slugify(op.name)
+          throw new HafezError(err.code, `op[${currentOp}] (${op.op} ${label}): ${err.message}`, err.details)
         }
         throw err
       }
@@ -888,6 +1058,7 @@ export function createHafez(config: HafezConfig): Hafez {
     link,
     unlink,
     batch,
+    validateBatch: async (operations: BatchOperation[]) => validateBatchCore(operations),
     sync: async () => {
       if (readOnly) throw new HafezError('VALIDATION_FAILED', 'Hafez instance is read-only')
       return withLock(() => gitSync(vaultPath))
@@ -922,7 +1093,10 @@ export function createHafez(config: HafezConfig): Hafez {
       const idx = getIndex()
       if (!idx) return emptyStats
       idx.syncIfStale()
-      return idx.getStats()
+      const s = idx.getStats()
+      s.recently_touched = await rankRecents(s.recently_touched, 'last_touched', 'modified')
+      s.recently_created = await rankRecents(s.recently_created, 'created', 'added')
+      return s
     },
     changelog: (since: string) => gitChangelog(vaultPath, since),
   }

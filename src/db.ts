@@ -410,16 +410,20 @@ function getStatsFn(db: InstanceType<typeof Database>): VaultStats {
     ORDER BY last_touched DESC
   `).all() as Array<{ slug: string; name: string; type: EntityType }>
 
+  // Full lists, not top-5: day-granularity timestamps tie massively (a
+  // new vault ties on everything), so the caller resolves ties (git commit
+  // time, then name) and caps. Name tiebreak here keeps the base order
+  // deterministic instead of leaking SQLite row order.
   const recently_touched = db.prepare(`
     SELECT slug, name, last_touched FROM items
     WHERE kind = 'entity'
-    ORDER BY last_touched DESC LIMIT 5
+    ORDER BY last_touched DESC, name COLLATE NOCASE ASC
   `).all() as Array<{ slug: string; name: string; last_touched: string }>
 
   const recently_created = db.prepare(`
     SELECT slug, name, created FROM items
     WHERE kind = 'entity'
-    ORDER BY created DESC LIMIT 5
+    ORDER BY created DESC, name COLLATE NOCASE ASC
   `).all() as Array<{ slug: string; name: string; created: string }>
 
   const knowledgeCount = (db.prepare("SELECT COUNT(*) as cnt FROM items WHERE kind = 'knowledge'").get() as { cnt: number }).cnt

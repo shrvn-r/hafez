@@ -79,6 +79,25 @@ Global flags:
 Vault discovery: --vault flag > ~/.config/hafez/vault
 `
 
+// Terminal handler for non-Hafez errors. Special-cases unbuilt better-sqlite3
+// bindings: npm 11+ blocks install scripts by default, so `npm install -g
+// hafez` reports success with the native module unbuilt and the first indexed
+// command dies here — guide instead of stack-tracing.
+function failUnknown(err: unknown): never {
+  const e = err as Error
+  if (/better[-_]sqlite3|Could not locate the bindings file/i.test(`${e.message}\n${e.stack ?? ''}`)) {
+    process.stderr.write(
+      'Error: the SQLite bindings (better-sqlite3) are not built.\n' +
+      'npm 11+ blocks install scripts by default, so the install reports success\n' +
+      'while skipping the native build. Fix with:\n\n' +
+      '  npm install -g hafez --allow-scripts=better-sqlite3\n',
+    )
+    process.exit(1)
+  }
+  process.stderr.write(`Error: ${e.message}\n`)
+  process.exit(1)
+}
+
 export async function main(argv: string[]): Promise<void> {
   const args = argv.slice(2)
 
@@ -136,8 +155,7 @@ export async function main(argv: string[]): Promise<void> {
         }
         process.exit(2)
       }
-      process.stderr.write(`Error: ${(err as Error).message}\n`)
-      process.exit(1)
+      failUnknown(err)
     }
     return
   }
@@ -188,8 +206,7 @@ export async function main(argv: string[]): Promise<void> {
         process.stdout.write(lines.join('\n') + '\n')
       }
     } catch (err) {
-      process.stderr.write(`Error: ${(err as Error).message}\n`)
-      process.exit(1)
+      failUnknown(err)
     }
     return
   }
@@ -211,8 +228,7 @@ export async function main(argv: string[]): Promise<void> {
         const exitCodes: Record<string, number> = { NOT_FOUND: 1, VALIDATION_FAILED: 2, GIT_PUSH_FAILED: 3 }
         process.exit(exitCodes[err.code] ?? 1)
       }
-      process.stderr.write(`Error: ${(err as Error).message}\n`)
-      process.exit(1)
+      failUnknown(err)
     }
     return
   }
@@ -252,8 +268,7 @@ export async function main(argv: string[]): Promise<void> {
       const exitCodes: Record<string, number> = { NOT_FOUND: 1, VALIDATION_FAILED: 2, GIT_PUSH_FAILED: 3 }
       process.exit(exitCodes[err.code] ?? 1)
     }
-    process.stderr.write(`Error: ${(err as Error).message}\n`)
-    process.exit(1)
+    failUnknown(err)
   }
 }
 

@@ -97,6 +97,20 @@ describe('hafez digest CLI', () => {
     expect(updateOp.fields.session_log).toBeDefined()
   })
 
+  it('reads input from --file (the portable Windows session-end path)', () => {
+    const payload = join(TMP, 'digest-input.json')
+    writeFileSync(payload, JSON.stringify({
+      entities_touched: ['simorgh'],
+      decisions: [],
+      narrative: 'File-based session.',
+      session_date: '2026-03-29',
+    }))
+    const result = spawnSync('node', [CLI, '--vault', VAULT, 'digest', '--file', payload], { encoding: 'utf-8' })
+    expect(result.status).toBe(0)
+    const ops = JSON.parse(result.stdout)
+    expect(ops.find((o: any) => o.op === 'update')?.slug).toBe('simorgh')
+  })
+
   it('exits 1 with descriptive error when narrative is missing', () => {
     const { stderr, exitCode } = runDigest({
       entities_touched: ['simorgh'],

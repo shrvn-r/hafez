@@ -388,12 +388,16 @@ describe('getStats', () => {
     db.close()
   })
 
-  it('returns recently_touched sorted desc, limited to 5', () => {
+  it('returns recently_touched sorted desc with deterministic name tiebreak (full list — caller caps)', () => {
     const db = createIndex(TMP)
     const stats = db.getStats()
-    expect(stats.recently_touched.length).toBeLessThanOrEqual(5)
     for (let i = 1; i < stats.recently_touched.length; i++) {
-      expect(stats.recently_touched[i - 1].last_touched >= stats.recently_touched[i].last_touched).toBe(true)
+      const prev = stats.recently_touched[i - 1]
+      const cur = stats.recently_touched[i]
+      expect(prev.last_touched >= cur.last_touched).toBe(true)
+      if (prev.last_touched === cur.last_touched) {
+        expect(prev.name.toLowerCase() <= cur.name.toLowerCase()).toBe(true)
+      }
     }
     db.close()
   })
@@ -407,12 +411,16 @@ describe('getStats', () => {
     db.close()
   })
 
-  it('returns recently_created sorted desc, limited to 5', () => {
+  it('returns recently_created sorted desc with deterministic name tiebreak (full list — caller caps)', () => {
     const db = createIndex(TMP)
     const stats = db.getStats()
-    expect(stats.recently_created.length).toBeLessThanOrEqual(5)
     for (let i = 1; i < stats.recently_created.length; i++) {
-      expect(stats.recently_created[i - 1].created >= stats.recently_created[i].created).toBe(true)
+      const prev = stats.recently_created[i - 1]
+      const cur = stats.recently_created[i]
+      expect(prev.created >= cur.created).toBe(true)
+      if (prev.created === cur.created) {
+        expect(prev.name.toLowerCase() <= cur.name.toLowerCase()).toBe(true)
+      }
     }
     db.close()
   })

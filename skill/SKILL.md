@@ -41,7 +41,7 @@ Quick reference for common operations:
 | Add evidence to knowledge | `hafez update <slug> --add-evidence "text"` |
 | Add source to knowledge | `hafez update <slug> --add-source "url"` |
 | Export OKF bundle | `hafez export --okf [--out <dir>]` (re-export overwrites, never deletes) |
-| Digest session → batch | `echo '{...}' \| hafez digest \| hafez batch` |
+| Digest session → batch | `echo '{...}' \| hafez digest \| hafez batch` (no pipes? `--file` on both) |
 
 Note: `--insight` is an alias for `--synthesis`.
 
@@ -143,6 +143,10 @@ echo '[
 
 Batch output includes created slugs: `Batch complete: 3 operations (created: new-thing, insight)`
 
+On shells that can't pipe stdin to native executables (Windows PowerShell 5.1), write the payload to a file and use `hafez batch --file payload.json` — same JSON, same behavior. (`cmd /c "hafez batch < payload.json"` also works.)
+
+**Slug contract.** Slugs derive deterministically from names: lowercase, non-alphanumeric runs become single `-` (`"Auth Refactor!"` → `auth-refactor`). Batch executes sequentially, so later ops can reference the slugs of earlier creates in the same payload — create-then-link works in one batch. Collisions hard-error, so a wrong prediction can't touch the wrong document; `hafez batch --dry-run` reports the derived slug for every create op if you want to verify first.
+
 For a single operation, individual commands are fine — they auto-sync.
 
 ## Session End — Digest
@@ -162,6 +166,8 @@ echo '{
   "agent": "claude"
 }' | hafez digest | hafez batch
 ```
+
+On shells that can't pipe (PowerShell 5.1), use files instead — digest stays inspectable in the middle: `hafez digest --file summary.json > ops.json`, then `hafez batch --file ops.json`.
 
 Digest adds a session log entry to each touched entity and creates a session note linking them all. Authoritative field docs: `hafez schema digest`.
 
