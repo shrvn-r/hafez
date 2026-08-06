@@ -5,7 +5,8 @@ import { dirname, join } from 'node:path'
 import { simpleGit, type SimpleGit } from 'simple-git'
 
 import { mergeVaultContent } from './merge.js'
-import { HafezError, type GitConfig, type ChangelogEntry } from './types.js'
+import { VAULT_FILE_RE, INDEXED_DIR_PATHSPECS, classifyIndexedRelPath } from './vault.js'
+import { HafezError, type GitConfig, type ChangelogEntry, type Journal } from './types.js'
 
 const logMerge = (msg: string) => process.stderr.write(`[hafez-merge] ${msg}\n`)
 
@@ -47,8 +48,6 @@ async function ensureCleanState(git: SimpleGit, vaultPath: string): Promise<void
     }
   }
 }
-
-const VAULT_FILE_RE = /^(?:entities|knowledge|sessions)\/.+\.md$/
 
 /**
  * True if the vault repo has an `origin` remote. A local-only vault (the
@@ -289,12 +288,13 @@ export async function gitSync(
 }
 
 /**
- * Unstage files (best effort). Used by batch rollback: a commit that fails
- * after `git add` leaves the new blobs staged in .git/index, and the next
- * successful commit would publish the rolled-back content under the wrong
- * message. Clearing the index entries restores worktree/HEAD/index agreement.
+ * Unstage files (best effort). Used by the journal adapter's commit-failure
+ * repair: a commit that fails after `git add` leaves the new blobs staged in
+ * .git/index, and the next successful commit would publish rolled-back
+ * content under the wrong message. Clearing the index entries restores
+ * worktree/HEAD/index agreement.
  */
-export async function gitUnstage(vaultPath: string, files: string[]): Promise<void> {
+async function gitUnstage(vaultPath: string, files: string[]): Promise<void> {
   try {
     await simpleGit(vaultPath).raw(['reset', '-q', 'HEAD', '--', ...files])
   } catch { /* best effort — rollback must not mask the original error */ }
@@ -329,7 +329,7 @@ export async function gitChangelog(vaultPath: string, since: string): Promise<Ch
   try {
     output = await git.raw([
       'log', `--since=${normalizedSince}`, '--name-status',
-      '--pretty=format:%H|%aI|%s', '--', 'entities/', 'knowledge/',
+      '--pretty=format:%H|%aI|%s', '--', ...INDEXED_DIR_PATHSPECS,
     ])
   } catch {
     return [] // No git history or invalid since — return empty
@@ -360,19 +360,10 @@ export async function gitChangelog(vaultPath: string, since: string): Promise<Ch
       // dirs and would otherwise surface as changelog rows.
       if (!filePath.endsWith('.md')) continue
 
-      let kind: 'entity' | 'knowledge'
-      let slug: string
-      if (filePath.startsWith('entities/')) {
-        kind = 'entity'
-        slug = filePath.replace('entities/', '').replace('.md', '')
-      } else if (filePath.startsWith('knowledge/')) {
-        kind = 'knowledge'
-        slug = filePath.replace('knowledge/', '').replace('.md', '')
-      } else {
-        continue
-      }
+      const classified = classifyIndexedRelPath(filePath)
+      if (!classified) continue
 
-      entries.push({ slug, kind, operation, timestamp, commit_message })
+      entries.push({ slug: classified.slug, kind: classified.kind, operation, timestamp, commit_message })
     }
   }
 
@@ -389,7 +380,7 @@ export async function gitFileTimes(vaultPath: string, mode: 'modified' | 'added'
   const git: SimpleGit = simpleGit(vaultPath)
   let output: string
   try {
-    const args = ['log', '--pretty=format:%x00%aI', '--name-only', '--', 'entities/', 'knowledge/']
+    const args = ['log', '--pretty=format:%x00%aI', '--name-only', '--', ...INDEXED_DIR_PATHSPECS]
     if (mode === 'added') args.splice(1, 0, '--diff-filter=A')
     output = await git.raw(args)
   } catch {
@@ -453,4 +444,31 @@ export async function gitCommitAndPush(
     (conflictFiles) => `Git conflict with remote (files: ${conflictFiles.join(', ')}). Changes saved locally.`,
     `Git push failed after ${MAX_PUSH_RETRIES} attempts. Changes saved locally.`
   )
+}
+
+/**
+ * The production Journal (see CONTEXT.md): vault persistence backed by git.
+ * Local-only vaults (no origin remote) commit silently without pushing —
+ * that behavior lives in gitCommitAndPush/gitSync, inside this adapter.
+ */
+export function createGitJournal(vaultPath: string, config: GitConfig = {}): Journal {
+  return {
+    async commit(written: string[], deleted: string[], message: string): Promise<void> {
+      const files = [...written, ...deleted]
+      try {
+        await gitCommitAndPush(vaultPath, files, message, config)
+      } catch (err) {
+        // Commit-stage failure: nothing landed, but `git add` may have staged
+        // the new blobs — clean up our own partial state before rethrowing.
+        // Push-stage failure keeps the local commit (GIT_PUSH_FAILED).
+        if (!(err instanceof HafezError && err.code === 'GIT_PUSH_FAILED')) {
+          await gitUnstage(vaultPath, files)
+        }
+        throw err
+      }
+    },
+    sync: () => gitSync(vaultPath),
+    changelog: (since: string) => gitChangelog(vaultPath, since),
+    fileTimes: (mode: 'modified' | 'added') => gitFileTimes(vaultPath, mode),
+  }
 }

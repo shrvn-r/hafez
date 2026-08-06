@@ -1,36 +1,32 @@
 // tests/operations.test.ts
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+// Pure operation logic against the in-memory Journal — zero git in setup.
+// Persistence-layer behavior (commit/push failures, rollback vs git state)
+// lives in operations-git.test.ts on a real repo.
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { createHafez } from '../src/index.js'
 import { parseFilePath } from '../src/vault.js'
 import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import simpleGit from 'simple-git'
+import { createMemoryJournal, type MemoryJournal } from './helpers/memory-journal.js'
 
 const TMP = join(tmpdir(), 'hafez-test-ops-' + Date.now())
-const BARE = join(TMP, 'remote.git')
 const VAULT = join(TMP, 'vault')
 
-beforeAll(async () => {
-  mkdirSync(TMP, { recursive: true })
-  mkdirSync(BARE, { recursive: true })
-  await simpleGit(BARE).init(true)
-  await simpleGit().clone(BARE, VAULT)
+beforeAll(() => {
   mkdirSync(join(VAULT, 'entities'), { recursive: true })
   mkdirSync(join(VAULT, 'knowledge'), { recursive: true })
-  // Initial commit
-  writeFileSync(join(VAULT, '.gitkeep'), '')
-  const git = simpleGit(VAULT)
-  await git.add('.gitkeep')
-  await git.commit('init')
-  const branch = (await git.branchLocal()).current
-  await git.push('origin', branch)
 })
 
 afterAll(() => rmSync(TMP, { recursive: true, force: true }))
 
+function makeOSWithJournal(): { os: ReturnType<typeof createHafez>; journal: MemoryJournal } {
+  const journal = createMemoryJournal()
+  return { os: createHafez({ vaultPath: VAULT, persistence: journal }), journal }
+}
+
 function makeOS() {
-  return createHafez({ vaultPath: VAULT, git: { push: false } })
+  return makeOSWithJournal().os
 }
 
 describe('create', () => {
@@ -154,6 +150,18 @@ describe('update', () => {
     const slug = await os.create('entity', 'Slug Validation Test', { type: 'entity' })
     await expect(os.update(slug, { related: ['non-existent-slug'] }))
       .rejects.toThrow(/does not exist/)
+  })
+
+  it('rejects invalid enum values on the direct update path (batch already did)', async () => {
+    const os = makeOS()
+    await expect(os.update('test-project', { status: 'bananas' as any }))
+      .rejects.toThrow(/Invalid status/)
+    const noteSlug = await os.create('knowledge', 'Enum Guard Note', { synthesis: 'Initial' })
+    await expect(os.update(noteSlug, { confidence: 'bogus' as any }))
+      .rejects.toThrow(/Invalid confidence/)
+    // The invalid value never lands in frontmatter
+    const { frontmatter } = parseFilePath(join(VAULT, 'entities/test-project.md'))
+    expect(frontmatter.status).not.toBe('bananas')
   })
 
   it('archives oldest session log entry when count >= 10', async () => {
@@ -561,76 +569,27 @@ describe('slug containment (SEC-1)', () => {
   })
 })
 
-describe('batch commit-stage vs push-stage failure (COR-5 / TST-1)', () => {
-  it('rolls back file writes when the commit stage fails', async () => {
-    const os = makeOS()
-    await os.create('entity', 'Rollback Probe', { type: 'project' })
-    const filePath = join(VAULT, 'entities', 'rollback-probe.md')
-    const before = readFileSync(filePath, 'utf-8')
+describe('batch session log archival (parity with single-op update)', () => {
+  it('archives the oldest entry when batch updates push the count to 10', async () => {
+    const { os, journal } = makeOSWithJournal()
+    await os.create('entity', 'Batch Archive Test', { type: 'project' })
+    const ops = Array.from({ length: 10 }, (_, i) => ({
+      op: 'update' as const,
+      slug: 'batch-archive-test',
+      fields: { session_log: { type: 'progress' as const, summary: `Batch entry ${i}`, agent: 'Test' } },
+    }))
+    await os.batch(ops)
 
-    // Simulate a raced git process holding the index lock — add/commit will fail
-    const indexLock = join(VAULT, '.git', 'index.lock')
-    writeFileSync(indexLock, '')
-    try {
-      await expect(
-        os.batch([{ op: 'update', slug: 'rollback-probe', fields: { brief: 'should not survive' } }])
-      ).rejects.toThrow()
-    } finally {
-      rmSync(indexLock, { force: true })
-    }
+    const archivePath = join(VAULT, 'entities', 'archive', 'batch-archive-test-log.md')
+    expect(existsSync(archivePath)).toBe(true)
+    expect(readFileSync(archivePath, 'utf-8')).toContain('Batch entry 0')
+    const body = readFileSync(join(VAULT, 'entities', 'batch-archive-test.md'), 'utf-8')
+    expect(body).not.toContain('Batch entry 0')
+    expect(body).toContain('Batch entry 9')
 
-    // The half-applied write must be rolled back...
-    expect(readFileSync(filePath, 'utf-8')).toBe(before)
-    expect(readFileSync(filePath, 'utf-8')).not.toContain('should not survive')
-    // ...including the git index: nothing staged, or the next commit would
-    // publish the rolled-back content under the wrong message
-    const status = await simpleGit(VAULT).status()
-    expect(status.staged).toHaveLength(0)
+    // The archive write rides the same batch commit
+    const last = journal.commits.at(-1)!
+    expect(last.message).toBe('batch: 10 operations')
+    expect(last.written).toContain('entities/archive/batch-archive-test-log.md')
   })
-
-  it('rolls back and unstages when the commit itself fails after staging', async () => {
-    const os = makeOS()
-    await os.create('entity', 'Hook Probe', { type: 'project' })
-    // A failing pre-commit hook makes `git add` succeed but `git commit` fail —
-    // the case where content is left staged without a commit
-    const hookPath = join(VAULT, '.git', 'hooks', 'pre-commit')
-    writeFileSync(hookPath, '#!/bin/sh\nexit 1\n', { mode: 0o755 })
-    try {
-      await expect(
-        os.batch([{ op: 'update', slug: 'hook-probe', fields: { brief: 'staged then failed' } }])
-      ).rejects.toThrow()
-    } finally {
-      rmSync(hookPath, { force: true })
-    }
-    const status = await simpleGit(VAULT).status()
-    expect(status.staged).toHaveLength(0)
-    expect(readFileSync(join(VAULT, 'entities', 'hook-probe.md'), 'utf-8')).not.toContain('staged then failed')
-  })
-
-  it('keeps the local commit when only the push stage fails', async () => {
-    const os = createHafez({ vaultPath: VAULT })
-    await os.create('entity', 'Push Fail Probe', { type: 'project' })
-
-    // Point origin at a nonexistent path so push (and pull) fail without conflict
-    const git = simpleGit(VAULT)
-    const originUrl = (await git.getRemotes(true)).find(r => r.name === 'origin')!.refs.push
-    await git.raw(['remote', 'set-url', 'origin', join(TMP, 'no-such-remote.git')])
-    try {
-      await expect(
-        os.batch([{ op: 'update', slug: 'push-fail-probe', fields: { brief: 'survives push failure' } }])
-      ).rejects.toMatchObject({ code: 'GIT_PUSH_FAILED' })
-    } finally {
-      await git.raw(['remote', 'set-url', 'origin', originUrl])
-    }
-
-    // The write is committed locally — file keeps the new content
-    const content = readFileSync(join(VAULT, 'entities', 'push-fail-probe.md'), 'utf-8')
-    expect(content).toContain('survives push failure')
-    const log = await git.log()
-    expect(log.latest?.message).toContain('batch: 1 operations')
-
-    // Heal: push the stranded commit so later tests see a clean state
-    const branch = (await git.branchLocal()).current
-    await git.push('origin', branch)
-  }, 30_000)
 })

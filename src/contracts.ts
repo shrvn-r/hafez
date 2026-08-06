@@ -84,8 +84,8 @@ export function hasCapability(type: string, section: string): boolean {
 import type { KnowledgeSubtype } from './types.js'
 
 // --- Canonical enum tuples (single source of truth) ---
-// Every consumer (file validators, CLI input validator, help renderer) imports these.
-// The cli-schema-parity test enforces that no other file declares local copies.
+// Every consumer (file validators, the Op Spec table, help renderer) imports
+// these — no other file may declare local copies.
 
 export const ENTITY_TYPES = ['capture', 'entity', 'project'] as const
 export const ENTITY_STATUSES = ['active', 'paused', 'done'] as const
@@ -110,3 +110,11 @@ export const SUBTYPE_SECTIONS: Record<KnowledgeSubtype, string[]> = {
   insight: ['Synthesis', 'Evidence', 'Sources'],
   plan: ['Goal', 'Steps', 'Dependencies'],
 }
+
+/** Sections whose content only ever grows — sync merges union their lines
+ * instead of letting the newer side replace the older (see merge.ts). */
+export const APPEND_ONLY_SECTIONS: ReadonlySet<string> = new Set(['Evidence', 'Sources'])
+
+/** Session-file sections. Sessions have no TypeContract (they are not typed
+ * entities), but their headings are still structural for Document splitting. */
+export const SESSION_SECTIONS = ['Summary', 'Entities Touched', 'Decisions'] as const

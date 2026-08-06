@@ -1,6 +1,7 @@
 // src/merge.ts
 import { parseContent, serializeFile } from './vault.js'
-import { parseSessionLogHeading } from './parser.js'
+import { parseSessionLogHeading, splitStructural, type DocSection } from './document.js'
+import { APPEND_ONLY_SECTIONS } from './contracts.js'
 
 // Fields that are ISO date strings — latest date wins
 const DATE_FIELDS = ['last-touched', 'last-reinforced', 'created']
@@ -64,45 +65,27 @@ function unionArrays(a: any, b: any): string[] {
 
 // --- Body merge ---
 
-interface Section { heading: string; content: string }
-
-function splitSections(body: string): { preamble: string; sections: Section[] } {
-  const parts = body.split(/\n(?=## )/g)
-  const sections: Section[] = []
-  let preamble = ''
-
-  for (const part of parts) {
-    if (part.startsWith('## ')) {
-      const nlIdx = part.indexOf('\n')
-      const heading = nlIdx === -1 ? part : part.slice(0, nlIdx)
-      const content = nlIdx === -1 ? '' : part.slice(nlIdx + 1)
-      sections.push({ heading: heading.trim(), content: content.trim() })
-    } else {
-      preamble = part.trim()
-    }
-  }
-
-  return { preamble, sections }
-}
-
 function mergeBody(remoteBody: string, localBody: string, localWins: boolean): string {
   if (remoteBody === localBody) return localBody
 
-  const remote = splitSections(remoteBody)
-  const local = splitSections(localBody)
+  // Structural split (see document.ts): sections are atomic — a user ##
+  // heading inside a Brief or a session-log entry body stays with its
+  // section instead of being split out and merged under its own policy.
+  const remote = splitStructural(remoteBody)
+  const local = splitStructural(localBody)
 
   // Build merged sections starting from local (local section order is canonical)
   const localHeadings = new Set(local.sections.map(s => s.heading))
-  const mergedSections: Section[] = []
+  const mergedSections: DocSection[] = []
 
   for (const ls of local.sections) {
     const rs = remote.sections.find(s => s.heading === ls.heading)
-    if (ls.heading === '## Session Log' && rs) {
+    if (ls.heading === 'Session Log' && rs) {
       mergedSections.push({ heading: ls.heading, content: mergeSessionLogs(rs.content, ls.content) })
-    } else if (ls.heading === '## Next Actions' && rs) {
+    } else if (ls.heading === 'Next Actions' && rs) {
       mergedSections.push({ heading: ls.heading, content: mergeNextActions(rs.content, ls.content) })
-    } else if ((ls.heading === '## Evidence' || ls.heading === '## Sources') && rs) {
-      // Append-only sections: union lines from both sides, dedup identical
+    } else if (APPEND_ONLY_SECTIONS.has(ls.heading) && rs) {
+      // Append-only sections (contracts.ts): union lines from both sides, dedup identical
       mergedSections.push({ heading: ls.heading, content: mergeAppendOnlyLines(rs.content, ls.content) })
     } else if (rs && !localWins) {
       // Scalar sections (Brief, Current State, Synthesis, ...): newer side wins
@@ -123,7 +106,7 @@ function mergeBody(remoteBody: string, localBody: string, localWins: boolean): s
   const preamble = localWins
     ? (local.preamble || remote.preamble)
     : (remote.preamble || local.preamble)
-  const parts = [preamble, ...mergedSections.map(s => `${s.heading}\n\n${s.content}`)].filter(Boolean)
+  const parts = [preamble, ...mergedSections.map(s => `## ${s.heading}\n\n${s.content}`)].filter(Boolean)
   return parts.join('\n\n')
 }
 

@@ -76,7 +76,23 @@ export interface KnowledgeFrontmatter {
 
 // --- Parsed file ---
 
+export interface SessionFrontmatter {
+  name: string
+  created: string
+  'session-date'?: string
+  related?: string[]
+}
+
+/** What parseFilePath returns: the kind comes from Layout (the file's
+ * directory), so consumers switch on `kind` instead of sniffing keys. */
+export type ParsedVaultFile =
+  | { kind: 'entity'; frontmatter: EntityFrontmatter; body: string }
+  | { kind: 'knowledge'; frontmatter: KnowledgeFrontmatter; body: string }
+  | { kind: 'session'; frontmatter: SessionFrontmatter; body: string }
+
 export interface ParsedFile<T = EntityFrontmatter | KnowledgeFrontmatter> {
+  /** Populated by read(): which side of the vault the slug resolved to. */
+  kind?: 'entity' | 'knowledge'
   frontmatter: T
   body: string
 }
@@ -290,10 +306,31 @@ export interface GitConfig {
   push?: boolean  // default true
 }
 
+/**
+ * The persistence seam (see CONTEXT.md: Journal) — everything core needs
+ * from the history layer behind vault mutations. Git satisfies it in
+ * production (src/git.ts); tests may inject an in-memory adapter.
+ */
+export interface Journal {
+  /** Persist one logical change: stage written+deleted paths (vault-relative)
+   * and commit under message. Must clean up its own partial state (e.g.
+   * staged files) before rethrowing on a commit-stage failure; a push-stage
+   * failure surfaces as GIT_PUSH_FAILED with the commit kept. */
+  commit(written: string[], deleted: string[], message: string): Promise<void>
+  /** Bidirectional sync with the remote, if any. */
+  sync(): Promise<{ pulled: boolean; pushed: boolean; remote: boolean }>
+  /** History-derived changelog for entities/ and knowledge/ since a date. */
+  changelog(since: string): Promise<ChangelogEntry[]>
+  /** Newest history timestamp per vault file (modified = any change, added = creation). */
+  fileTimes(mode: 'modified' | 'added'): Promise<Map<string, string>>
+}
+
 export interface HafezConfig {
   vaultPath: string
   readOnly?: boolean
   git?: GitConfig
+  /** Override the persistence layer. Defaults to the git adapter. */
+  persistence?: Journal
   onWrite?: (slug: string, operation: string) => void
 }
 
@@ -314,7 +351,7 @@ export interface Hafez {
   validateBatch(operations: BatchOperation[]): Promise<BatchValidationReport>
   sync(): Promise<{ pulled: boolean; pushed: boolean; remote: boolean }>
   children(slug: string): Promise<{ items: QueryResult[], total: number }>
-  related_to(slug: string, relation?: string): Promise<{ items: (QueryResult | KnowledgeQueryResult)[], total: number }>
+  related_to(slug: string, relation?: string): Promise<{ items: UnifiedResult[], total: number }>
   query_knowledge(opts?: KnowledgeQueryOpts): Promise<{ items: KnowledgeQueryResult[], total: number }>
   validate(): Promise<ValidationReport>
   search(query: string, kind?: 'entity' | 'knowledge' | 'all'): Promise<SearchResult[]>

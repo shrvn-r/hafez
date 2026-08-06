@@ -111,45 +111,45 @@ describe('hafez digest CLI', () => {
     expect(ops.find((o: any) => o.op === 'update')?.slug).toBe('simorgh')
   })
 
-  it('exits 1 with descriptive error when narrative is missing', () => {
+  it('exits 2 (bad payload) with descriptive error when narrative is missing', () => {
     const { stderr, exitCode } = runDigest({
       entities_touched: ['simorgh'],
       decisions: [],
       session_date: '2026-03-29',
     })
 
-    expect(exitCode).toBe(1)
+    expect(exitCode).toBe(2)
     expect(stderr).toContain('narrative')
   })
 
-  it('exits 1 with descriptive error when session_date is missing', () => {
+  it('exits 2 (bad payload) with descriptive error when session_date is missing', () => {
     const { stderr, exitCode } = runDigest({
       entities_touched: ['simorgh'],
       decisions: [],
       narrative: 'Some work.',
     })
 
-    expect(exitCode).toBe(1)
+    expect(exitCode).toBe(2)
     expect(stderr).toContain('session_date')
   })
 
-  it('exits 1 when stdin is not valid JSON', () => {
+  it('exits 2 (bad payload) when stdin is not valid JSON', () => {
     const result = spawnSync(
       'node',
       [CLI, '--vault', VAULT, 'digest'],
       { input: 'not json', encoding: 'utf-8' },
     )
-    expect(result.status).toBe(1)
+    expect(result.status).toBe(2)
     expect(result.stderr).toContain('Invalid JSON')
   })
 
-  it('exits 1 when stdin is empty', () => {
+  it('exits 2 (usage error) when stdin is empty', () => {
     const result = spawnSync(
       'node',
       [CLI, '--vault', VAULT, 'digest'],
       { input: '', encoding: 'utf-8' },
     )
-    expect(result.status).toBe(1)
+    expect(result.status).toBe(2)
     expect(result.stderr).toMatch(/Invalid JSON|No input/)
   })
 

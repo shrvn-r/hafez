@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'fs
 import { join, resolve } from 'path'
 import { homedir } from 'os'
 import { execSync } from 'child_process'
+import { kindDir } from '../vault.js'
 
 export function getConfigDir(): string {
   const xdg = process.env.XDG_CONFIG_HOME
@@ -31,7 +32,7 @@ export function saveVaultConfig(vaultPath: string): void {
 }
 
 function isVault(dirPath: string): boolean {
-  return existsSync(dirPath) && statSync(dirPath).isDirectory() && existsSync(join(dirPath, 'entities'))
+  return existsSync(dirPath) && statSync(dirPath).isDirectory() && existsSync(join(dirPath, kindDir('entity')))
 }
 
 /**

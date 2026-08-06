@@ -12,6 +12,7 @@ import { tmpdir } from 'os'
 import simpleGit from 'simple-git'
 import { serializeFile } from '../src/vault.js'
 import { createHafez } from '../src/index.js'
+import { createMemoryJournal } from './helpers/memory-journal.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -59,13 +60,25 @@ describe('cross-process write lock (COR-2)', () => {
   }, 120_000)
 
   it('two in-process instances with separate mutexes are serialized by the vault lock', async () => {
-    const os1 = createHafez({ vaultPath: VAULT })
-    const os2 = createHafez({ vaultPath: VAULT })
+    // Lock logic only — no git: each instance gets its own in-memory journal,
+    // so the serialization under test is purely the vault lockfile.
+    const VAULT2 = join(TMP, 'vault-nogit')
+    mkdirSync(join(VAULT2, 'entities'), { recursive: true })
+    const today = new Date().toISOString().slice(0, 10)
+    writeFileSync(
+      join(VAULT2, 'entities', 'race-target.md'),
+      serializeFile(
+        { name: 'Race Target', type: 'project', status: 'active', created: today, 'last-touched': today },
+        '## Purpose\n\nConcurrency test target\n\n## Session Log\n',
+      ),
+    )
+    const os1 = createHafez({ vaultPath: VAULT2, persistence: createMemoryJournal() })
+    const os2 = createHafez({ vaultPath: VAULT2, persistence: createMemoryJournal() })
     await Promise.all([
       os1.update('race-target', { session_log: { summary: 'instance one entry', type: 'progress', agent: 'inst1' } }),
       os2.update('race-target', { session_log: { summary: 'instance two entry', type: 'progress', agent: 'inst2' } }),
     ])
-    const content = readFileSync(join(VAULT, 'entities', 'race-target.md'), 'utf-8')
+    const content = readFileSync(join(VAULT2, 'entities', 'race-target.md'), 'utf-8')
     expect(content).toContain('instance one entry')
     expect(content).toContain('instance two entry')
   }, 60_000)

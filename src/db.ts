@@ -1,11 +1,11 @@
 import Database from 'better-sqlite3'
 import { createHash } from 'crypto'
-import { readdirSync, readFileSync, statSync, existsSync, unlinkSync } from 'fs'
+import { readFileSync, statSync, existsSync, unlinkSync } from 'fs'
 import { join, basename } from 'path'
-import { parseFilePath } from './vault.js'
+import { parseFilePath, scanVaultDir, kindDir, INDEXED_KINDS } from './vault.js'
 import { ensureLocalExclude } from './knowledge-index.js'
-import { getNextActions, getBrief, WIKI_LINK_RE, findSection } from './sections.js'
-import { parseSessionLog } from './parser.js'
+import { getNextActions, getBrief, WIKI_LINK_RE, findSection } from './document.js'
+import { parseSessionLog } from './document.js'
 import type { SearchResult, VaultStats, EntityStatus, EntityType } from './types.js'
 
 // Bump this when indexing logic changes to force a full rebuild.
@@ -90,14 +90,6 @@ const STOPWORDS = new Set([
 
 function hashContent(content: string): string {
   return createHash('sha256').update(content).digest('hex')
-}
-
-function scanDir(dirPath: string): string[] {
-  try {
-    // Skip dotfiles: their slugs are rejected by resolveFilePath, so indexing
-    // them would list entities that read/update can never reach.
-    return readdirSync(dirPath).filter(f => f.endsWith('.md') && !f.startsWith('.')).map(f => join(dirPath, f))
-  } catch { return [] }
 }
 
 interface IndexItem {
@@ -593,7 +585,7 @@ export function createIndex(vaultPath: string, opts?: { readonly?: boolean }): H
     let fm: Record<string, any>, body: string
     try {
       const parsed = parseFilePath(filePath)
-      fm = parsed.frontmatter
+      fm = parsed.frontmatter as Record<string, any>
       body = parsed.body
     } catch (err) {
       process.stderr.write(`Warning: skipping ${kind}/${slug}.md: failed to parse (${(err as Error).message})\n`)
@@ -676,8 +668,8 @@ export function createIndex(vaultPath: string, opts?: { readonly?: boolean }): H
     while ((wikiMatch = linkRe.exec(authoredBody)) !== null) {
       const targetSlug = wikiMatch[1]
       // Check if target file exists on disk (not in index — target may not be indexed yet)
-      const targetEntityPath = join(vaultPath, 'entities', `${targetSlug}.md`)
-      const targetKnowledgePath = join(vaultPath, 'knowledge', `${targetSlug}.md`)
+      const targetEntityPath = join(vaultPath, kindDir('entity'), `${targetSlug}.md`)
+      const targetKnowledgePath = join(vaultPath, kindDir('knowledge'), `${targetSlug}.md`)
       const targetExists = knownSlugs
         ? knownSlugs.has(targetSlug)
         : existsSync(targetEntityPath) || existsSync(targetKnowledgePath)
@@ -693,17 +685,17 @@ export function createIndex(vaultPath: string, opts?: { readonly?: boolean }): H
 
     // Collect all vault slugs for wiki link target validation
     const allVaultSlugs = new Set<string>()
-    for (const file of scanDir(join(vaultPath, 'entities'))) {
+    for (const file of scanVaultDir(join(vaultPath, kindDir('entity')))) {
       allVaultSlugs.add(basename(file, '.md'))
     }
-    for (const file of scanDir(join(vaultPath, 'knowledge'))) {
+    for (const file of scanVaultDir(join(vaultPath, kindDir('knowledge')))) {
       allVaultSlugs.add(basename(file, '.md'))
     }
 
-    for (const file of scanDir(join(vaultPath, 'entities'))) {
+    for (const file of scanVaultDir(join(vaultPath, kindDir('entity')))) {
       indexFile(file, 'entity', allVaultSlugs)
     }
-    for (const file of scanDir(join(vaultPath, 'knowledge'))) {
+    for (const file of scanVaultDir(join(vaultPath, kindDir('knowledge')))) {
       indexFile(file, 'knowledge', allVaultSlugs)
     }
 
@@ -722,13 +714,10 @@ export function createIndex(vaultPath: string, opts?: { readonly?: boolean }): H
     const lastSyncTime = parseInt(lastSync.value, 10)
     let changed = false
 
-    const dirs: Array<{ dir: string; kind: 'entity' | 'knowledge' }> = [
-      { dir: 'entities', kind: 'entity' },
-      { dir: 'knowledge', kind: 'knowledge' },
-    ]
+    const dirs = INDEXED_KINDS.map(kind => ({ dir: kindDir(kind), kind }))
 
     for (const { dir, kind } of dirs) {
-      for (const file of scanDir(join(vaultPath, dir))) {
+      for (const file of scanVaultDir(join(vaultPath, dir))) {
         if (statSync(file).mtimeMs > lastSyncTime) {
           indexFile(file, kind)
           changed = true
@@ -740,7 +729,7 @@ export function createIndex(vaultPath: string, opts?: { readonly?: boolean }): H
     const dbSlugs = (db.prepare('SELECT slug FROM items').all() as Array<{ slug: string }>).map(r => r.slug)
     const fileSlugs = new Set<string>()
     for (const { dir } of dirs) {
-      for (const file of scanDir(join(vaultPath, dir))) {
+      for (const file of scanVaultDir(join(vaultPath, dir))) {
         fileSlugs.add(basename(file, '.md'))
       }
     }
@@ -758,8 +747,7 @@ export function createIndex(vaultPath: string, opts?: { readonly?: boolean }): H
   }
 
   function upsertFromFile(slug: string, kind: 'entity' | 'knowledge'): void {
-    const dir = kind === 'entity' ? 'entities' : 'knowledge'
-    const filePath = join(vaultPath, dir, `${slug}.md`)
+    const filePath = join(vaultPath, kindDir(kind), `${slug}.md`)
     if (existsSync(filePath)) {
       // Force re-index by clearing cached hash
       deleteItemStmt.run(slug)

@@ -1,22 +1,40 @@
 // src/index.ts
-import { parseFilePath, serializeFile, slugify, resolveFilePath, kindFromPath } from './vault.js'
-import { gitCommitAndPush, gitSync, gitChangelog, gitUnstage, gitFileTimes } from './git.js'
+import { parseFilePath, serializeFile, slugify, resolveFilePath, kindFromPath, kindDir, scanVaultDir, archiveLogPath, isIndexedRelPath } from './vault.js'
+import { createGitJournal } from './git.js'
 import { validateEntityFrontmatter, validateKnowledgeFrontmatter, validateSessionLogEntry } from './schema.js'
 import { bodyTemplate, knowledgeBodyTemplate } from './templates.js'
-import { formatSessionLogEntry, countSessionLogEntries, extractOldestSessionLogEntry } from './parser.js'
-import { setBrief, removeBrief, addNextAction, completeNextAction, removeNextAction, clearNextActions, syncRelatedSection, findNextStructuralHeading, findSection } from './sections.js'
+import { formatSessionLogEntry, countSessionLogEntries, extractOldestSessionLogEntry, setBrief, removeBrief, addNextAction, completeNextAction, removeNextAction, clearNextActions, syncRelatedSection, findSection, setSection, appendToSection, prependSessionLogEntry, bodyBeforeSessionLog } from './document.js'
 import { queryEntities, queryChildren, queryRelatedTo, queryKnowledge, queryUnified } from './query.js'
-import { getContract } from './contracts.js'
+import { getContract, ENTITY_STATUSES, CONFIDENCE_LEVELS } from './contracts.js'
 import { createIndex, type HafezIndex } from './db.js'
 import { generateVaultIndex } from './knowledge-index.js'
 import type { Hafez, HafezConfig, ReadDepth, ParsedFile, UpdateFields, CreateEntityFields, CreateKnowledgeFields, QueryFilter, EntityType, EntityQueryOpts, KnowledgeQueryOpts, LinkRelation, ConfidenceLevel, QueryResult, KnowledgeQueryResult, UnifiedResult, ValidationReport, BatchOperation, BatchResult, BatchOpValidation, BatchValidationReport, SearchResult, VaultStats } from './types.js'
 import { HafezError } from './types.js'
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, appendFileSync, unlinkSync } from 'fs'
-import { join, relative, basename } from 'path'
+import { BatchOperationSchema, specFor, type OpCheckContext } from './batch-ops.js'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, unlinkSync } from 'fs'
+import { join, relative, basename, dirname } from 'path'
 import { lock as lockVault } from 'proper-lockfile'
+
+// One applied mutation: what was written/deleted (repo-relative, ready to
+// stage), the per-op commit message, and which SQLite rows to touch AFTER the
+// commit lands. Single-op methods apply exactly one and commit it under its
+// own message; batch() applies many and composes a single commit.
+interface AppliedOp {
+  filesWritten: string[]
+  filesDeleted: string[]
+  result: BatchResult
+  commitMessage: string
+  indexRemovals: string[]
+  indexUpserts: Array<{ slug: string; kind: 'entity' | 'knowledge' }>
+  matchedAction?: string
+}
 
 export function createHafez(config: HafezConfig): Hafez {
   const { vaultPath, readOnly = false, git: gitConfig = {}, onWrite } = config
+
+  // The persistence seam (CONTEXT.md: Journal). Everything below talks to
+  // history through this port; git is just the default adapter.
+  const journal = config.persistence ?? createGitJournal(vaultPath, gitConfig)
 
   // Two-level write lock: an in-process promise chain serializes calls within
   // this instance, then a cross-process advisory lock (proper-lockfile, mkdir
@@ -150,52 +168,17 @@ export function createHafez(config: HafezConfig): Hafez {
     return fm
   }
 
-  function replaceSection(body: string, heading: string, content: string, insertBefore?: string): string {
-    const idx = body.indexOf(heading)
-    if (idx >= 0) {
-      const afterPos = idx + heading.length
-      const nextH = findNextStructuralHeading(body, afterPos)
-      if (nextH !== -1) {
-        return body.slice(0, afterPos) + '\n\n' + content + '\n' + body.slice(nextH)
-      }
-      return body.slice(0, afterPos) + '\n\n' + content + '\n'
-    }
-    if (insertBefore) {
-      const beforeIdx = body.indexOf(insertBefore)
-      if (beforeIdx >= 0) {
-        return body.slice(0, beforeIdx) + heading + '\n\n' + content + '\n\n' + body.slice(beforeIdx)
-      }
-    }
-    return body + '\n\n' + heading + '\n\n' + content + '\n'
-  }
-
-  function insertSessionLog(body: string, entry: string): string {
-    const slHeader = '## Session Log'
-    const slIdx = body.indexOf(slHeader)
-    if (slIdx >= 0) {
-      const insertPos = slIdx + slHeader.length
-      return body.slice(0, insertPos) + '\n\n' + entry + '\n' + body.slice(insertPos)
-    }
-    return body + '\n\n' + slHeader + '\n\n' + entry + '\n'
-  }
-
-  function appendToSection(body: string, heading: string, content: string): string {
-    const idx = body.indexOf(heading)
-    if (idx >= 0) {
-      const afterPos = idx + heading.length
-      const nextH = findNextStructuralHeading(body, afterPos)
-      if (nextH !== -1) {
-        return body.slice(0, afterPos) + body.slice(afterPos, nextH) + '\n' + content + body.slice(nextH)
-      }
-      return body.slice(0, afterPos) + body.slice(afterPos) + '\n' + content + '\n'
-    }
-    return body + '\n\n' + heading + '\n\n' + content + '\n'
-  }
-
   function applyUpdateFields(fm: Record<string, any>, body: string, fields: UpdateFields): { fm: Record<string, any>; body: string; matchedAction?: string } {
-    if (fields.status !== undefined) fm.status = fields.status
+    // Enum checks mirror the batch Zod shapes — without them the direct CLI
+    // path writes invalid values straight into frontmatter.
+    if (fields.status !== undefined) {
+      if (!(ENTITY_STATUSES as readonly string[]).includes(fields.status)) {
+        throw new HafezError('VALIDATION_FAILED', `Invalid status '${fields.status}'. Valid: ${ENTITY_STATUSES.join(', ')}`)
+      }
+      fm.status = fields.status
+    }
     if (fields.current_state !== undefined) {
-      body = replaceSection(body, '## Current State', fields.current_state, '## Session Log')
+      body = setSection(body, 'Current State', fields.current_state, 'Session Log')
     }
     if (fields.brief !== undefined) {
       body = fields.brief === null ? removeBrief(body) : setBrief(body, fields.brief)
@@ -217,7 +200,7 @@ export function createHafez(config: HafezConfig): Hafez {
     if (fields.session_log) {
       const logErrors = validateSessionLogEntry(fields.session_log)
       if (logErrors.length > 0) throw new HafezError('VALIDATION_FAILED', 'Invalid session log entry', logErrors)
-      body = insertSessionLog(body, formatSessionLogEntry(fields.session_log))
+      body = prependSessionLogEntry(body, formatSessionLogEntry(fields.session_log))
     }
     // Domain (shared) + knowledge-only metadata
     if (fields.domain !== undefined) {
@@ -232,7 +215,12 @@ export function createHafez(config: HafezConfig): Hafez {
       if (fields.resource === '' || fields.resource === null) delete fm.resource
       else fm.resource = fields.resource
     }
-    if (fields.confidence !== undefined) fm.confidence = fields.confidence
+    if (fields.confidence !== undefined) {
+      if (!(CONFIDENCE_LEVELS as readonly string[]).includes(fields.confidence)) {
+        throw new HafezError('VALIDATION_FAILED', `Invalid confidence '${fields.confidence}'. Valid: ${CONFIDENCE_LEVELS.join(', ')}`)
+      }
+      fm.confidence = fields.confidence
+    }
     if (fields.tags !== undefined) fm.tags = fields.tags
     if (fields.related !== undefined) {
       for (const r of fields.related) {
@@ -241,18 +229,18 @@ export function createHafez(config: HafezConfig): Hafez {
       fm.related = fields.related
     }
     if (fields.synthesis !== undefined) {
-      body = replaceSection(body, '## Synthesis', fields.synthesis)
+      body = setSection(body, 'Synthesis', fields.synthesis)
     }
     if (fields.add_evidence) {
       const sanitized = fields.add_evidence.replace(/^#{1,2}\s/gm, '### ')
-      body = appendToSection(body, '## Evidence', sanitized)
+      body = appendToSection(body, 'Evidence', sanitized)
       fm['reinforcement-count'] = (fm['reinforcement-count'] ?? 0) + 1
       fm['last-reinforced'] = today()
       // NOTE: Confidence auto-promotion (observation→pattern at count>=3) was intentionally
       // removed. Confidence changes are now a deliberate decision via update --confidence.
     }
     if (fields.add_source) {
-      body = appendToSection(body, '## Sources', fields.add_source)
+      body = appendToSection(body, 'Sources', fields.add_source)
     }
     if (fm['last-touched'] !== today()) fm['last-touched'] = today()
     return { fm, body, matchedAction }
@@ -275,104 +263,65 @@ export function createHafez(config: HafezConfig): Hafez {
     const filePath = findFile(slug)
     if (!filePath) throw new HafezError('NOT_FOUND', `Entity or knowledge '${slug}' not found`)
     const parsed = parseFilePath(filePath)
+    // findFile only resolves the indexed kinds, so the session arm is unreachable
+    const kind = parsed.kind === 'session' ? 'knowledge' : parsed.kind
     const frontmatter = parsed.frontmatter as ParsedFile['frontmatter']
     const body = parsed.body
-    if (depth === 'frontmatter') return { frontmatter, body: '' }
+    if (depth === 'frontmatter') return { kind, frontmatter, body: '' }
     if (depth === 'summary') {
-      const sessionLogIdx = body.indexOf('## Session Log')
-      return { frontmatter, body: sessionLogIdx >= 0 ? body.slice(0, sessionLogIdx).trim() : body }
+      return { kind, frontmatter, body: bodyBeforeSessionLog(body) }
     }
-    return { frontmatter, body }
+    return { kind, frontmatter, body }
   }
 
-  async function create(kind: 'entity', name: string, fields: CreateEntityFields): Promise<string>
-  async function create(kind: 'knowledge', name: string, fields?: CreateKnowledgeFields): Promise<string>
-  async function create(kind: 'entity' | 'knowledge', name: string, fields?: CreateEntityFields | CreateKnowledgeFields): Promise<string> {
-    if (readOnly) throw new HafezError('VALIDATION_FAILED', 'Hafez instance is read-only')
-    return withLock(async () => {
-      const slug = slugify(name)
-      if (exists(slug)) throw new HafezError('SLUG_EXISTS', `Slug '${slug}' already exists`)
-
-      if (kind === 'entity') {
-        const ef = fields as CreateEntityFields
-        const fm = buildEntityFrontmatter(name, ef)
-
-        let body = buildEntityBody(ef)
-        const filePath = entityPath(slug)
-        mkdirSync(join(vaultPath, 'entities'), { recursive: true })
-        body = syncRelatedSection(body, fm)
-        writeFileSync(filePath, serializeFile(fm, body))
-
-        await gitCommitAndPush(vaultPath, [relative(vaultPath, filePath)], `create: ${name}`, gitConfig)
-        getIndex()!.upsertFromFile(slug, 'entity')
-        onWrite?.(slug, 'create')
+  function rollbackFiles(originals: Map<string, string | null>): void {
+    for (const [path, content] of originals) {
+      if (content === null) {
+        try { unlinkSync(path) } catch {}
       } else {
-        const kf = (fields || {}) as CreateKnowledgeFields
-        const fm = buildKnowledgeFrontmatter(name, kf)
-        let body = knowledgeBodyTemplate(kf.subtype, { synthesis: kf.synthesis })
-
-        const filePath = knowledgePath(slug)
-        mkdirSync(join(vaultPath, 'knowledge'), { recursive: true })
-        body = syncRelatedSection(body, fm)
-        writeFileSync(filePath, serializeFile(fm, body))
-
-        await gitCommitAndPush(vaultPath, [relative(vaultPath, filePath)], `create: ${name}`, gitConfig)
-        getIndex()!.upsertFromFile(slug, 'knowledge')
-        onWrite?.(slug, 'create')
+        writeFileSync(path, content)
       }
-
-      regenerateIndexSafe()
-      return slug
-    })
+    }
   }
 
-  async function capture(name: string, notes?: string): Promise<string> {
-    if (readOnly) throw new HafezError('VALIDATION_FAILED', 'Hafez instance is read-only')
-    return withLock(async () => {
-      const slug = slugify(name)
-      if (exists(slug)) throw new HafezError('SLUG_EXISTS', `Slug '${slug}' already exists`)
-
-      const fm: Record<string, any> = {
-        name,
-        type: 'capture',
-        status: 'active',
-        created: today(),
-        'last-touched': today(),
-      }
-      const body = bodyTemplate('capture', { notes })
-      const filePath = entityPath(slug)
-      mkdirSync(join(vaultPath, 'entities'), { recursive: true })
-      writeFileSync(filePath, serializeFile(fm, body))
-
-      await gitCommitAndPush(vaultPath, [relative(vaultPath, filePath)], `capture: ${name}`, gitConfig)
-      getIndex()!.upsertFromFile(slug, 'entity')
-      regenerateIndexSafe()
-      onWrite?.(slug, 'capture')
-      return slug
-    })
+  // All SQLite writes happen here, strictly after the git commit succeeded.
+  // A failed commit rolls back files only — the index was never touched, so
+  // files, git, and index stay consistent (pre-collapse, promote removed its
+  // index row mid-apply and a rollback lost it).
+  function updateIndexPostCommit(applied: AppliedOp[]): void {
+    for (const a of applied) {
+      for (const slug of a.indexRemovals) getIndex()!.removeItem(slug)
+      for (const u of a.indexUpserts) getIndex()!.upsertFromFile(u.slug, u.kind)
+    }
   }
 
-  async function update(slug: string, fields: UpdateFields) {
-    if (readOnly) throw new HafezError('VALIDATION_FAILED', 'Hafez instance is read-only')
-    return withLock(async () => {
-      const filePath = findFile(slug)
-      if (!filePath) throw new HafezError('NOT_FOUND', `'${slug}' not found`)
-
+  // The single apply path for every mutation. Writes vault files but never
+  // touches git or SQLite: callers commit [...filesWritten, ...filesDeleted]
+  // under commitMessage (single ops) or one composed batch message, then run
+  // updateIndexPostCommit. captureOriginal lets batch() snapshot files for
+  // rollback before they change.
+  function applyOperation(op: BatchOperation, captureOriginal: (path: string) => void = () => {}): AppliedOp {
+    if (op.op === 'update') {
+      const filePath = findFile(op.slug)
+      if (!filePath) throw new HafezError('NOT_FOUND', `'${op.slug}' not found`)
+      captureOriginal(filePath)
       const kind = kindFromPath(filePath)
-      validateKindFields(kind, fields)
+      validateKindFields(kind, op.fields)
 
-      let { frontmatter: fm, body } = parseFilePath(filePath)
-      const applied = applyUpdateFields(fm, body, fields)
+      const parsedFile = parseFilePath(filePath)
+      let fm = parsedFile.frontmatter as Record<string, any>
+      let body = parsedFile.body
+      const applied = applyUpdateFields(fm, body, op.fields)
       fm = applied.fm
       body = applied.body
 
       // Session log archival
+      const archivePath = archiveLogPath(vaultPath, op.slug)
       if (countSessionLogEntries(body) >= 10) {
         const extracted = extractOldestSessionLogEntry(body)
         if (extracted) {
-          const archiveDir = join(vaultPath, 'entities', 'archive')
-          mkdirSync(archiveDir, { recursive: true })
-          const archivePath = join(archiveDir, `${slug}-log.md`)
+          captureOriginal(archivePath)
+          mkdirSync(dirname(archivePath), { recursive: true })
           appendFileSync(archivePath, extracted.entry + '\n\n')
           body = extracted.remaining
         }
@@ -382,39 +331,256 @@ export function createHafez(config: HafezConfig): Hafez {
       writeFileSync(filePath, serializeFile(fm, body))
 
       const files = [relative(vaultPath, filePath)]
-      const archivePath = join(vaultPath, 'entities', 'archive', `${slug}-log.md`)
       if (existsSync(archivePath)) files.push(relative(vaultPath, archivePath))
 
-      await gitCommitAndPush(vaultPath, files, `update: ${slug}`, gitConfig)
-      getIndex()!.upsertFromFile(slug, kind)
+      return {
+        filesWritten: files,
+        filesDeleted: [],
+        result: { op: 'update', slug: op.slug, status: 'ok' },
+        commitMessage: `update: ${op.slug}`,
+        indexRemovals: [],
+        indexUpserts: [{ slug: op.slug, kind }],
+        matchedAction: applied.matchedAction,
+      }
+    }
+
+    if (op.op === 'create' && op.kind === 'session') {
+      const slug = slugify(op.name)
+      if (exists(slug)) {
+        return {
+          filesWritten: [], filesDeleted: [],
+          result: { op: 'create', slug, status: 'error', error: `Slug '${slug}' already exists in the vault` },
+          commitMessage: `create: ${op.name}`, indexRemovals: [], indexUpserts: [],
+        }
+      }
+      const sessionDir = join(vaultPath, kindDir('session'))
+      mkdirSync(sessionDir, { recursive: true })
+      const filePath = join(sessionDir, `${slug}.md`)
+      if (existsSync(filePath)) {
+        return {
+          filesWritten: [], filesDeleted: [],
+          result: { op: 'create', slug, status: 'error', error: `Session '${slug}' already exists` },
+          commitMessage: `create: ${op.name}`, indexRemovals: [], indexUpserts: [],
+        }
+      }
+      captureOriginal(filePath)
+      const fm: Record<string, any> = { name: op.name, created: today() }
+      const kf = (op.fields ?? {}) as CreateKnowledgeFields
+      if (kf['session-date']) fm['session-date'] = kf['session-date']
+      if (kf.related?.length) fm.related = kf.related
+      // Session files use sections: Summary, Entities Touched, Decisions
+      const sections = ['Summary', 'Entities Touched', 'Decisions']
+      const lines: string[] = []
+      for (const section of sections) {
+        lines.push(`## ${section}`)
+        if (section === 'Summary' && kf.synthesis) lines.push('', kf.synthesis)
+        lines.push('')
+      }
+      let sessionBody = lines.join('\n')
+      sessionBody = syncRelatedSection(sessionBody, fm)
+      writeFileSync(filePath, serializeFile(fm, sessionBody))
+      // Sessions are not indexed (db.ts only scans entities/ and knowledge/).
+      // They ARE included in git semantic merge (git.ts VAULT_FILE_RE).
+      return {
+        filesWritten: [relative(vaultPath, filePath)],
+        filesDeleted: [],
+        result: { op: 'create', slug, status: 'ok', created: true },
+        commitMessage: `create: ${op.name}`,
+        indexRemovals: [],
+        indexUpserts: [],
+      }
+    }
+
+    if (op.op === 'create') {
+      const slug = slugify(op.name)
+      if (exists(slug)) throw new HafezError('SLUG_EXISTS', `Slug '${slug}' already exists`)
+
+      if (op.kind === 'entity') {
+        const ef = op.fields
+        const fm = buildEntityFrontmatter(op.name, ef)
+        let body = buildEntityBody(ef)
+        const filePath = entityPath(slug)
+        captureOriginal(filePath)
+        mkdirSync(join(vaultPath, kindDir('entity')), { recursive: true })
+        body = syncRelatedSection(body, fm)
+        writeFileSync(filePath, serializeFile(fm, body))
+        return {
+          filesWritten: [relative(vaultPath, filePath)],
+          filesDeleted: [],
+          result: { op: 'create', slug, status: 'ok', created: true },
+          commitMessage: `create: ${op.name}`,
+          indexRemovals: [],
+          indexUpserts: [{ slug, kind: 'entity' }],
+        }
+      }
+
+      const kf = (op.fields || {}) as CreateKnowledgeFields
+      const fm = buildKnowledgeFrontmatter(op.name, kf)
+      let body = knowledgeBodyTemplate(kf.subtype, { synthesis: kf.synthesis })
+      const filePath = knowledgePath(slug)
+      captureOriginal(filePath)
+      mkdirSync(join(vaultPath, kindDir('knowledge')), { recursive: true })
+      body = syncRelatedSection(body, fm)
+      writeFileSync(filePath, serializeFile(fm, body))
+      return {
+        filesWritten: [relative(vaultPath, filePath)],
+        filesDeleted: [],
+        result: { op: 'create', slug, status: 'ok', created: true },
+        commitMessage: `create: ${op.name}`,
+        indexRemovals: [],
+        indexUpserts: [{ slug, kind: 'knowledge' }],
+      }
+    }
+
+    if (op.op === 'capture') {
+      const slug = slugify(op.name)
+      if (exists(slug)) throw new HafezError('SLUG_EXISTS', `Slug '${slug}' already exists`)
+      const fm: Record<string, any> = {
+        name: op.name,
+        type: 'capture',
+        status: 'active',
+        created: today(),
+        'last-touched': today(),
+      }
+      const filePath = entityPath(slug)
+      captureOriginal(filePath)
+      mkdirSync(join(vaultPath, kindDir('entity')), { recursive: true })
+      writeFileSync(filePath, serializeFile(fm, bodyTemplate('capture', { notes: op.notes })))
+      return {
+        filesWritten: [relative(vaultPath, filePath)],
+        filesDeleted: [],
+        result: { op: 'capture', slug, status: 'ok', created: true },
+        commitMessage: `capture: ${op.name}`,
+        indexRemovals: [],
+        indexUpserts: [{ slug, kind: 'entity' }],
+      }
+    }
+
+    if (op.op === 'link') {
+      const filePath = findFile(op.slug)
+      if (!filePath) throw new HafezError('NOT_FOUND', `'${op.slug}' not found`)
+      if (!exists(op.target)) throw new HafezError('VALIDATION_FAILED', `Target '${op.target}' does not exist`)
+      captureOriginal(filePath)
+
+      const parsedFile = parseFilePath(filePath)
+      const fm = parsedFile.frontmatter as Record<string, any>
+      let body = parsedFile.body
+
+      if (op.relation === 'parent') {
+        fm.parent = op.target
+      } else {
+        const related = fm.related || []
+        if (!related.includes(op.target)) related.push(op.target)
+        fm.related = related
+      }
+
+      body = syncRelatedSection(body, fm)
+      writeFileSync(filePath, serializeFile(fm, body))
+      return {
+        filesWritten: [relative(vaultPath, filePath)],
+        filesDeleted: [],
+        result: { op: 'link', slug: op.slug, status: 'ok' },
+        commitMessage: `link: ${op.slug} → ${op.target} (${op.relation})`,
+        indexRemovals: [],
+        indexUpserts: [{ slug: op.slug, kind: kindFromPath(filePath) }],
+      }
+    }
+
+    if (op.op === 'unlink') {
+      const filePath = findFile(op.slug)
+      if (!filePath) throw new HafezError('NOT_FOUND', `'${op.slug}' not found`)
+      captureOriginal(filePath)
+
+      const parsedFile = parseFilePath(filePath)
+      const fm = parsedFile.frontmatter as Record<string, any>
+      let body = parsedFile.body
+
+      if (op.relation === 'parent' && fm.parent === op.target) {
+        delete fm.parent
+      } else if (op.relation === 'related' && fm.related) {
+        fm.related = fm.related.filter((r: string) => r !== op.target)
+        if (fm.related.length === 0) delete fm.related
+      }
+
+      body = syncRelatedSection(body, fm)
+      writeFileSync(filePath, serializeFile(fm, body))
+      return {
+        filesWritten: [relative(vaultPath, filePath)],
+        filesDeleted: [],
+        result: { op: 'unlink', slug: op.slug, status: 'ok' },
+        commitMessage: `unlink: ${op.slug} ✕ ${op.target} (${op.relation})`,
+        indexRemovals: [],
+        indexUpserts: [{ slug: op.slug, kind: kindFromPath(filePath) }],
+      }
+    }
+
+    // promote
+    const filePath = findFile(op.slug)
+    if (!filePath) throw new HafezError('NOT_FOUND', `'${op.slug}' not found`)
+    captureOriginal(filePath)
+    if (op.target === 'knowledge') captureOriginal(knowledgePath(op.slug))
+    const kind = kindFromPath(filePath)
+    const parsedFile = parseFilePath(filePath)
+    const fm = parsedFile.frontmatter as Record<string, any>
+    const body = parsedFile.body
+    const sourceType = kind === 'knowledge' ? 'knowledge' : (fm.type as string)
+    const { modifiedFiles, deletedFiles } = promoteCore(op.slug, op.target, filePath, fm, body, kind)
+    return {
+      filesWritten: modifiedFiles,
+      filesDeleted: deletedFiles,
+      result: { op: 'promote', slug: op.slug, status: 'ok' },
+      commitMessage: `promote: ${op.slug} ${sourceType} → ${op.target}`,
+      indexRemovals: op.target === 'knowledge' ? [op.slug] : [],
+      indexUpserts: [{ slug: op.slug, kind: op.target === 'knowledge' ? 'knowledge' : 'entity' }],
+    }
+  }
+
+  async function create(kind: 'entity', name: string, fields: CreateEntityFields): Promise<string>
+  async function create(kind: 'knowledge', name: string, fields?: CreateKnowledgeFields): Promise<string>
+  async function create(kind: 'entity' | 'knowledge', name: string, fields?: CreateEntityFields | CreateKnowledgeFields): Promise<string> {
+    if (readOnly) throw new HafezError('VALIDATION_FAILED', 'Hafez instance is read-only')
+    return withLock(async () => {
+      const a = kind === 'entity'
+        ? applyOperation({ op: 'create', kind, name, fields: fields as CreateEntityFields })
+        : applyOperation({ op: 'create', kind, name, fields: fields as CreateKnowledgeFields | undefined })
+      await journal.commit(a.filesWritten, a.filesDeleted, a.commitMessage)
+      updateIndexPostCommit([a])
+      onWrite?.(a.result.slug, 'create')
+      regenerateIndexSafe()
+      return a.result.slug
+    })
+  }
+
+  async function capture(name: string, notes?: string): Promise<string> {
+    if (readOnly) throw new HafezError('VALIDATION_FAILED', 'Hafez instance is read-only')
+    return withLock(async () => {
+      const a = applyOperation({ op: 'capture', name, notes })
+      await journal.commit(a.filesWritten, a.filesDeleted, a.commitMessage)
+      updateIndexPostCommit([a])
+      regenerateIndexSafe()
+      onWrite?.(a.result.slug, 'capture')
+      return a.result.slug
+    })
+  }
+
+  async function update(slug: string, fields: UpdateFields) {
+    if (readOnly) throw new HafezError('VALIDATION_FAILED', 'Hafez instance is read-only')
+    return withLock(async () => {
+      const a = applyOperation({ op: 'update', slug, fields })
+      await journal.commit(a.filesWritten, a.filesDeleted, a.commitMessage)
+      updateIndexPostCommit([a])
       regenerateIndexSafe()
       onWrite?.(slug, 'update')
-      return { matched_action: applied.matchedAction }
+      return { matched_action: a.matchedAction }
     })
   }
 
   async function link(slug: string, target: string, relation: LinkRelation): Promise<void> {
     if (readOnly) throw new HafezError('VALIDATION_FAILED', 'Hafez instance is read-only')
     return withLock(async () => {
-      const filePath = findFile(slug)
-      if (!filePath) throw new HafezError('NOT_FOUND', `'${slug}' not found`)
-      if (!exists(target)) throw new HafezError('VALIDATION_FAILED', `Target '${target}' does not exist`)
-
-      let { frontmatter: fm, body } = parseFilePath(filePath)
-
-      if (relation === 'parent') {
-        fm.parent = target
-      } else {
-        const related = fm.related || []
-        if (!related.includes(target)) related.push(target)
-        fm.related = related
-      }
-
-      body = syncRelatedSection(body, fm)
-      writeFileSync(filePath, serializeFile(fm, body))
-      await gitCommitAndPush(vaultPath, [relative(vaultPath, filePath)], `link: ${slug} → ${target} (${relation})`, gitConfig)
-      const kind = kindFromPath(filePath)
-      getIndex()!.upsertFromFile(slug, kind)
+      const a = applyOperation({ op: 'link', slug, target, relation })
+      await journal.commit(a.filesWritten, a.filesDeleted, a.commitMessage)
+      updateIndexPostCommit([a])
       regenerateIndexSafe()
       onWrite?.(slug, 'link')
     })
@@ -423,23 +589,9 @@ export function createHafez(config: HafezConfig): Hafez {
   async function unlink(slug: string, target: string, relation: LinkRelation): Promise<void> {
     if (readOnly) throw new HafezError('VALIDATION_FAILED', 'Hafez instance is read-only')
     return withLock(async () => {
-      const filePath = findFile(slug)
-      if (!filePath) throw new HafezError('NOT_FOUND', `'${slug}' not found`)
-
-      let { frontmatter: fm, body } = parseFilePath(filePath)
-
-      if (relation === 'parent' && fm.parent === target) {
-        delete fm.parent
-      } else if (relation === 'related' && fm.related) {
-        fm.related = fm.related.filter((r: string) => r !== target)
-        if (fm.related.length === 0) delete fm.related
-      }
-
-      body = syncRelatedSection(body, fm)
-      writeFileSync(filePath, serializeFile(fm, body))
-      await gitCommitAndPush(vaultPath, [relative(vaultPath, filePath)], `unlink: ${slug} ✕ ${target} (${relation})`, gitConfig)
-      const kind = kindFromPath(filePath)
-      getIndex()!.upsertFromFile(slug, kind)
+      const a = applyOperation({ op: 'unlink', slug, target, relation })
+      await journal.commit(a.filesWritten, a.filesDeleted, a.commitMessage)
+      updateIndexPostCommit([a])
       regenerateIndexSafe()
       onWrite?.(slug, 'unlink')
     })
@@ -462,8 +614,8 @@ export function createHafez(config: HafezConfig): Hafez {
     const candidates = rows.filter(r => day(r) >= cutoffDay)
     const hasTies = new Set(candidates.map(day)).size < candidates.length
     if (!hasTies) return rows.slice(0, 5)
-    const times = await gitFileTimes(vaultPath, mode)
-    const gitTime = (r: T) => times.get(`entities/${r.slug}.md`) ?? ''
+    const times = await journal.fileTimes(mode)
+    const gitTime = (r: T) => times.get(`${kindDir('entity')}/${r.slug}.md`) ?? ''
     candidates.sort((a, b) => {
       const dayCmp = day(b).localeCompare(day(a))
       if (dayCmp !== 0) return dayCmp
@@ -482,103 +634,54 @@ export function createHafez(config: HafezConfig): Hafez {
     // slug → what it would be after earlier ops in this batch
     const simulated = new Map<string, { kind: 'entity' | 'knowledge'; type: string }>()
     const simulatedSessions = new Set<string>()
-
-    const resolve = (slug: string): { kind: 'entity' | 'knowledge'; type: string } | null => {
-      const sim = simulated.get(slug)
-      if (sim) return sim
-      const fp = findFile(slug)
-      if (!fp) return null
-      const kind = kindFromPath(fp)
-      if (kind === 'knowledge') return { kind, type: 'knowledge' }
-      try { return { kind, type: parseFilePath(fp).frontmatter.type } } catch { return { kind, type: 'entity' } }
-    }
     const existsAnywhere = (slug: string) => simulated.has(slug) || exists(slug)
+
+    // Vault context for the Op Spec table's semantic checks (src/batch-ops.ts).
+    const ctx: OpCheckContext = {
+      resolve: (slug) => {
+        const sim = simulated.get(slug)
+        if (sim) return sim
+        const fp = findFile(slug)
+        if (!fp) return null
+        const kind = kindFromPath(fp)
+        if (kind === 'knowledge') return { kind, type: 'knowledge' }
+        try {
+          const pf = parseFilePath(fp)
+          return { kind, type: pf.kind === 'entity' ? pf.frontmatter.type : 'entity' }
+        } catch { return { kind, type: 'entity' } }
+      },
+      existsAnywhere,
+      sessionExists: (slug) => existsSync(join(vaultPath, kindDir('session'), `${slug}.md`)) || simulatedSessions.has(slug),
+      simulate: (slug, info) => { simulated.set(slug, info) },
+      simulateSession: (slug) => { simulatedSessions.add(slug) },
+      validateKindFields,
+      validateSessionLogEntry: (entry) => validateSessionLogEntry(entry),
+      buildEntityFrontmatter: (name, fields) => { buildEntityFrontmatter(name, fields, existsAnywhere) },
+      buildKnowledgeFrontmatter: (name, fields) => { buildKnowledgeFrontmatter(name, fields, existsAnywhere) },
+    }
 
     const report: BatchOpValidation[] = []
     for (const [index, op] of operations.entries()) {
-      const errors: string[] = []
-      let warning: string | undefined
-      let slug: string
-      let created = false
-      const pushErr = (err: unknown) => {
-        const e = err as HafezError
-        errors.push(e.details?.length ? `${e.message}: ${e.details.join('; ')}` : e.message)
+      // Shape and semantics in one pass: library callers get the same runtime
+      // guarantee the CLI's JSON path has always had.
+      const shape = BatchOperationSchema.safeParse(op)
+      if (!shape.success) {
+        const raw = op as Record<string, unknown> | undefined
+        const label = raw && typeof raw.slug === 'string' ? raw.slug
+          : raw && typeof raw.name === 'string' ? slugify(raw.name) : ''
+        report.push({
+          index,
+          op: typeof raw?.op === 'string' ? raw.op : '?',
+          slug: label,
+          errors: shape.error.issues.map(i => `invalid shape at ${i.path.join('.') || '(root)'}: ${i.message}`),
+        })
+        continue
       }
-
-      if (op.op === 'update') {
-        slug = op.slug
-        const target = resolve(op.slug)
-        if (!target) errors.push(`'${op.slug}' not found`)
-        else {
-          try { validateKindFields(target.kind, op.fields) } catch (err) { pushErr(err) }
-        }
-        if (op.fields.session_log) {
-          const logErrors = validateSessionLogEntry(op.fields.session_log)
-          if (logErrors.length > 0) errors.push(`Invalid session log entry: ${logErrors.join('; ')}`)
-        }
-        if (op.fields.related) {
-          for (const r of op.fields.related) {
-            if (!existsAnywhere(r)) errors.push(`Related slug '${r}' does not exist`)
-          }
-        }
-
-      } else if (op.op === 'create' && op.kind === 'session') {
-        slug = slugify(op.name)
-        if (exists(slug) || existsSync(join(vaultPath, 'sessions', `${slug}.md`)) || simulatedSessions.has(slug)) {
-          warning = `session '${slug}' already exists — op will be skipped (batch continues)`
-        } else {
-          simulatedSessions.add(slug)
-          created = true
-        }
-
-      } else if (op.op === 'create') {
-        slug = slugify(op.name)
-        if (existsAnywhere(slug)) errors.push(`Slug '${slug}' already exists`)
-        if (op.kind === 'entity') {
-          try { buildEntityFrontmatter(op.name, op.fields, existsAnywhere) } catch (err) { pushErr(err) }
-          simulated.set(slug, { kind: 'entity', type: op.fields.type })
-        } else {
-          try { buildKnowledgeFrontmatter(op.name, (op.fields || {}) as CreateKnowledgeFields, existsAnywhere) } catch (err) { pushErr(err) }
-          simulated.set(slug, { kind: 'knowledge', type: 'knowledge' })
-        }
-        created = errors.length === 0
-
-      } else if (op.op === 'capture') {
-        slug = slugify(op.name)
-        if (existsAnywhere(slug)) errors.push(`Slug '${slug}' already exists`)
-        simulated.set(slug, { kind: 'entity', type: 'capture' })
-        created = errors.length === 0
-
-      } else if (op.op === 'link') {
-        slug = op.slug
-        if (!resolve(op.slug)) errors.push(`'${op.slug}' not found`)
-        if (!existsAnywhere(op.target)) errors.push(`Target '${op.target}' does not exist`)
-
-      } else if (op.op === 'unlink') {
-        slug = op.slug
-        if (!resolve(op.slug)) errors.push(`'${op.slug}' not found`)
-
-      } else {
-        // promote
-        slug = op.slug
-        const cur = resolve(op.slug)
-        if (!cur) errors.push(`'${op.slug}' not found`)
-        else {
-          const currentType = cur.kind === 'knowledge' ? 'knowledge' : cur.type
-          try {
-            const contract = getContract(currentType)
-            if (!contract.canPromoteTo.includes(op.target)) {
-              errors.push(`Cannot promote ${currentType} to ${op.target}. Valid targets: ${contract.canPromoteTo.join(', ') || 'none (terminal type)'}`)
-            } else {
-              simulated.set(op.slug, op.target === 'knowledge' ? { kind: 'knowledge', type: 'knowledge' } : { kind: 'entity', type: op.target })
-            }
-          } catch (err) { pushErr(err) }
-        }
-      }
-
-      const entry: BatchOpValidation = { index, op: op.op, slug, errors }
-      if (created) entry.created = true
-      if (warning) entry.warning = warning
+      const spec = specFor(op)
+      const res = spec.check(op, ctx)
+      const entry: BatchOpValidation = { index, op: op.op, slug: res.slug, errors: res.errors }
+      if (res.created) entry.created = true
+      if (res.warning) entry.warning = res.warning
       report.push(entry)
     }
 
@@ -612,163 +715,19 @@ export function createHafez(config: HafezConfig): Hafez {
         }
       }
 
-      const modifiedFiles: string[] = []
-      const affectedSlugs: string[] = []
+      const appliedOps: AppliedOp[] = []
       const results: BatchResult[] = []
 
       let currentOp = -1
       try {
         for (const op of operations) {
           currentOp++
-          if (op.op === 'update') {
-            const filePath = findFile(op.slug)
-            if (!filePath) throw new HafezError('VALIDATION_FAILED', `'${op.slug}' not found`)
-            captureOriginal(filePath)
-            validateKindFields(kindFromPath(filePath), op.fields)
-
-            const { frontmatter: fm, body } = parseFilePath(filePath)
-            const applied = applyUpdateFields(fm, body, op.fields)
-            applied.body = syncRelatedSection(applied.body, applied.fm)
-            writeFileSync(filePath, serializeFile(applied.fm, applied.body))
-            modifiedFiles.push(relative(vaultPath, filePath))
-            affectedSlugs.push(op.slug)
-            results.push({ op: 'update', slug: op.slug, status: 'ok' })
-
-          } else if (op.op === 'create' && op.kind === 'session') {
-            const slug = slugify(op.name)
-            if (exists(slug)) {
-              results.push({ op: 'create', slug, status: 'error', error: `Slug '${slug}' already exists in the vault` })
-              continue
-            }
-            const sessionDir = join(vaultPath, 'sessions')
-            mkdirSync(sessionDir, { recursive: true })
-            const filePath = join(sessionDir, `${slug}.md`)
-            if (existsSync(filePath)) {
-              results.push({ op: 'create', slug, status: 'error', error: `Session '${slug}' already exists` })
-              continue
-            }
-            captureOriginal(filePath)
-            const fm: Record<string, any> = { name: op.name, created: today() }
-            const kf = (op.fields ?? {}) as CreateKnowledgeFields
-            if (kf['session-date']) fm['session-date'] = kf['session-date']
-            if (kf.related?.length) fm.related = kf.related
-            // Session files use sections: Summary, Entities Touched, Decisions
-            const sections = ['Summary', 'Entities Touched', 'Decisions']
-            const lines: string[] = []
-            for (const section of sections) {
-              lines.push(`## ${section}`)
-              if (section === 'Summary' && kf.synthesis) lines.push('', kf.synthesis)
-              lines.push('')
-            }
-            let sessionBody = lines.join('\n')
-            sessionBody = syncRelatedSection(sessionBody, fm)
-            writeFileSync(filePath, serializeFile(fm, sessionBody))
-            modifiedFiles.push(relative(vaultPath, filePath))
-            // Sessions are not indexed (db.ts only scans entities/ and knowledge/).
-            // They ARE included in git semantic merge (git.ts VAULT_FILE_RE).
-            results.push({ op: 'create', slug, status: 'ok', created: true })
-
-          } else if (op.op === 'create') {
-            const slug = slugify(op.name)
-            if (exists(slug)) throw new HafezError('VALIDATION_FAILED', `Slug '${slug}' already exists`)
-
-            if (op.kind === 'entity') {
-              const ef = op.fields
-              const fm = buildEntityFrontmatter(op.name, ef)
-              let entBody = buildEntityBody(ef)
-              const filePath = entityPath(slug)
-              captureOriginal(filePath)
-              mkdirSync(join(vaultPath, 'entities'), { recursive: true })
-              entBody = syncRelatedSection(entBody, fm)
-              writeFileSync(filePath, serializeFile(fm, entBody))
-              modifiedFiles.push(relative(vaultPath, filePath))
-              affectedSlugs.push(slug)
-              results.push({ op: 'create', slug, status: 'ok', created: true })
-            } else {
-              const kf = (op.fields || {}) as CreateKnowledgeFields
-              const fm = buildKnowledgeFrontmatter(op.name, kf)
-              let body = knowledgeBodyTemplate(kf.subtype, { synthesis: kf.synthesis })
-              const filePath = knowledgePath(slug)
-              captureOriginal(filePath)
-              mkdirSync(join(vaultPath, 'knowledge'), { recursive: true })
-              body = syncRelatedSection(body, fm)
-              writeFileSync(filePath, serializeFile(fm, body))
-              modifiedFiles.push(relative(vaultPath, filePath))
-              affectedSlugs.push(slug)
-              results.push({ op: 'create', slug, status: 'ok', created: true })
-            }
-
-          } else if (op.op === 'capture') {
-            const slug = slugify(op.name)
-            if (exists(slug)) throw new HafezError('VALIDATION_FAILED', `Slug '${slug}' already exists`)
-            const fm: Record<string, any> = { name: op.name, type: 'capture', status: 'active', created: today(), 'last-touched': today() }
-            const filePath = entityPath(slug)
-            captureOriginal(filePath)
-            mkdirSync(join(vaultPath, 'entities'), { recursive: true })
-            writeFileSync(filePath, serializeFile(fm, bodyTemplate('capture', { notes: op.notes })))
-            modifiedFiles.push(relative(vaultPath, filePath))
-            affectedSlugs.push(slug)
-            results.push({ op: 'capture', slug, status: 'ok', created: true })
-
-          } else if (op.op === 'link') {
-            const filePath = findFile(op.slug)
-            if (!filePath) throw new HafezError('VALIDATION_FAILED', `'${op.slug}' not found`)
-            if (!exists(op.target)) throw new HafezError('VALIDATION_FAILED', `Target '${op.target}' does not exist`)
-            captureOriginal(filePath)
-            let { frontmatter: fm, body } = parseFilePath(filePath)
-            if (op.relation === 'parent') {
-              fm.parent = op.target
-            } else {
-              const related = fm.related || []
-              if (!related.includes(op.target)) related.push(op.target)
-              fm.related = related
-            }
-            body = syncRelatedSection(body, fm)
-            writeFileSync(filePath, serializeFile(fm, body))
-            modifiedFiles.push(relative(vaultPath, filePath))
-            affectedSlugs.push(op.slug)
-            results.push({ op: 'link', slug: op.slug, status: 'ok' })
-
-          } else if (op.op === 'unlink') {
-            const filePath = findFile(op.slug)
-            if (!filePath) throw new HafezError('VALIDATION_FAILED', `'${op.slug}' not found`)
-            captureOriginal(filePath)
-            let { frontmatter: fm, body } = parseFilePath(filePath)
-            if (op.relation === 'parent' && fm.parent === op.target) delete fm.parent
-            else if (op.relation === 'related' && fm.related) {
-              fm.related = fm.related.filter((r: string) => r !== op.target)
-              if (fm.related.length === 0) delete fm.related
-            }
-            body = syncRelatedSection(body, fm)
-            writeFileSync(filePath, serializeFile(fm, body))
-            modifiedFiles.push(relative(vaultPath, filePath))
-            affectedSlugs.push(op.slug)
-            results.push({ op: 'unlink', slug: op.slug, status: 'ok' })
-
-          } else if (op.op === 'promote') {
-            const filePath = findFile(op.slug)
-            if (!filePath) throw new HafezError('VALIDATION_FAILED', `'${op.slug}' not found`)
-            captureOriginal(filePath)
-            if (op.target === 'knowledge') {
-              captureOriginal(knowledgePath(op.slug))
-            }
-            const kind = kindFromPath(filePath)
-            const { frontmatter: fm, body } = parseFilePath(filePath)
-            const { modifiedFiles: promoteFiles } = promoteCore(op.slug, op.target, filePath, fm, body, kind)
-            modifiedFiles.push(...promoteFiles)
-            affectedSlugs.push(op.slug)
-            results.push({ op: 'promote', slug: op.slug, status: 'ok' })
-          }
+          const a = applyOperation(op, captureOriginal)
+          results.push(a.result)
+          if (a.result.status === 'ok') appliedOps.push(a)
         }
       } catch (err) {
-        // Rollback all modified files
-        for (const [path, content] of originals) {
-          if (content === null) {
-            try { unlinkSync(path) } catch {}
-          } else {
-            writeFileSync(path, content)
-          }
-        }
+        rollbackFiles(originals)
         // Localise: which op failed, by index and slug/name. The validate
         // phase above catches semantic errors pre-execution; this covers
         // residual execution-time failures (races, disk errors).
@@ -780,42 +739,35 @@ export function createHafez(config: HafezConfig): Hafez {
         throw err
       }
 
-      // Single git commit for all batch operations
-      const uniqueFiles = [...new Set(modifiedFiles)]
+      // Single journal commit for all batch operations
+      const writtenAll = [...new Set(appliedOps.flatMap(a => a.filesWritten))]
+      const deletedAll = [...new Set(appliedOps.flatMap(a => a.filesDeleted))]
 
       const indexAfterBatch = () => {
-        for (const slug of affectedSlugs) {
-          const fp = findFile(slug)
-          if (fp) {
-            getIndex()!.upsertFromFile(slug, kindFromPath(fp))
-          }
-        }
+        updateIndexPostCommit(appliedOps)
         // Regenerate vault index if any entity or knowledge was touched (session-only batches skip)
-        const anyIndexedTouched = uniqueFiles.some(f => f.startsWith('knowledge/') || f.startsWith('entities/'))
+        const anyIndexedTouched = [...writtenAll, ...deletedAll].some(isIndexedRelPath)
         if (anyIndexedTouched) {
           regenerateIndexSafe()
         }
-        for (const slug of affectedSlugs) onWrite?.(slug, 'batch')
+        // Session creates carry no index upserts — they were never notified
+        // pre-collapse either (sessions aren't indexed entities).
+        for (const a of appliedOps) {
+          if (a.indexUpserts.length > 0) onWrite?.(a.result.slug, 'batch')
+        }
       }
 
-      if (uniqueFiles.length > 0) {
+      if (writtenAll.length + deletedAll.length > 0) {
         try {
-          await gitCommitAndPush(vaultPath, uniqueFiles, `batch: ${operations.length} operations`, gitConfig)
+          await journal.commit(writtenAll, deletedAll, `batch: ${operations.length} operations`)
         } catch (err) {
           if (!(err instanceof HafezError && err.code === 'GIT_PUSH_FAILED')) {
             // Commit-stage failure (e.g. a raced .git/index.lock): nothing was
-            // committed — restore the captured originals so files, git, and
-            // index stay consistent instead of leaving the batch half-applied.
-            for (const [path, content] of originals) {
-              if (content === null) {
-                try { unlinkSync(path) } catch {}
-              } else {
-                writeFileSync(path, content)
-              }
-            }
-            // Also clear anything the failed commit left staged, or the next
-            // commit would publish the rolled-back content.
-            await gitUnstage(vaultPath, uniqueFiles)
+            // committed — restore the captured originals so files, journal,
+            // and index stay consistent instead of leaving the batch
+            // half-applied. The adapter has already cleaned up its own
+            // partial state (staged files) before rethrowing.
+            rollbackFiles(originals)
             throw err
           }
           // Push-stage failure: the batch commit exists locally ("changes
@@ -844,16 +796,16 @@ export function createHafez(config: HafezConfig): Hafez {
     const referencedKnowledge = new Set<string>()
 
     // Scan entities
-    const entDir = join(vaultPath, 'entities')
-    if (existsSync(entDir)) {
-      const files = readdirSync(entDir).filter(f => f.endsWith('.md'))
+    const entDir = join(vaultPath, kindDir('entity'))
+    {
+      const files = scanVaultDir(entDir)
       report.total_entities = files.length
-      for (const file of files) {
-        const slug = basename(file, '.md')
+      for (const filePath of files) {
+        const slug = basename(filePath, '.md')
         allSlugs.add(slug)
         let fm: Record<string, any>
         try {
-          fm = parseFilePath(join(entDir, file)).frontmatter
+          fm = parseFilePath(filePath).frontmatter
         } catch {
           report.missing_fields.push({ slug, field: '', issue: 'failed to parse frontmatter' })
           continue
@@ -876,17 +828,17 @@ export function createHafez(config: HafezConfig): Hafez {
     }
 
     // Scan knowledge
-    const knDir = join(vaultPath, 'knowledge')
-    if (existsSync(knDir)) {
-      const files = readdirSync(knDir).filter(f => f.endsWith('.md'))
+    const knDir = join(vaultPath, kindDir('knowledge'))
+    {
+      const files = scanVaultDir(knDir)
       report.total_knowledge = files.length
-      for (const file of files) {
-        const slug = basename(file, '.md')
+      for (const filePath of files) {
+        const slug = basename(filePath, '.md')
         allSlugs.add(slug)
         knowledgeSlugs.add(slug)
         let fm: Record<string, any>
         try {
-          fm = parseFilePath(join(knDir, file)).frontmatter
+          fm = parseFilePath(filePath).frontmatter
         } catch {
           report.missing_fields.push({ slug, field: '', issue: 'failed to parse frontmatter' })
           continue
@@ -927,7 +879,7 @@ export function createHafez(config: HafezConfig): Hafez {
     fm: Record<string, any>,
     body: string,
     kind: 'entity' | 'knowledge'
-  ): { modifiedFiles: string[] } {
+  ): { modifiedFiles: string[]; deletedFiles: string[] } {
     const currentType = kind === 'knowledge' ? 'knowledge' : (fm.type as string)
     const contract = getContract(currentType)
     if (!contract.canPromoteTo.includes(target)) {
@@ -935,6 +887,7 @@ export function createHafez(config: HafezConfig): Hafez {
     }
 
     const modifiedFiles: string[] = []
+    const deletedFiles: string[] = []
 
     if (target === 'knowledge') {
       // Cross-kind: move file from entities/ to knowledge/
@@ -957,8 +910,7 @@ export function createHafez(config: HafezConfig): Hafez {
       modifiedFiles.push(relative(vaultPath, newPath))
       // The deletion must be staged too — `git add` of a removed path stages
       // the removal; omitting it leaves the vault permanently dirty.
-      modifiedFiles.push(relative(vaultPath, filePath))
-      getIndex()!.removeItem(slug)
+      deletedFiles.push(relative(vaultPath, filePath))
     } else {
       // Same-kind: capture→entity, capture→project, entity→project
       fm.type = target
@@ -997,7 +949,7 @@ export function createHafez(config: HafezConfig): Hafez {
       modifiedFiles.push(relative(vaultPath, filePath))
     }
 
-    return { modifiedFiles }
+    return { modifiedFiles, deletedFiles }
   }
 
   async function promote(slug: string, target: 'entity' | 'project' | 'knowledge'): Promise<string> {
@@ -1006,21 +958,24 @@ export function createHafez(config: HafezConfig): Hafez {
       const filePath = findFile(slug)
       if (!filePath) throw new HafezError('NOT_FOUND', `'${slug}' not found`)
 
-      const kind = kindFromPath(filePath)
-      // Capture original content for rollback before parsing (avoids double read)
+      // Capture original content for rollback
       const originalContent = target === 'knowledge' ? readFileSync(filePath, 'utf-8') : null
       const knowledgeTarget = target === 'knowledge' ? knowledgePath(slug) : null
 
-      const { frontmatter: fm, body } = parseFilePath(filePath)
-      const sourceType = kind === 'knowledge' ? 'knowledge' : (fm.type as string)
-
+      let a: ReturnType<typeof applyOperation> | undefined
       try {
-        const { modifiedFiles } = promoteCore(slug, target, filePath, fm, body, kind)
-        await gitCommitAndPush(vaultPath, modifiedFiles, `promote: ${slug} ${sourceType} → ${target}`, gitConfig)
-        getIndex()!.upsertFromFile(slug, target === 'knowledge' ? 'knowledge' : 'entity')
-        regenerateIndexSafe()
-        onWrite?.(slug, 'promote')
+        a = applyOperation({ op: 'promote', slug, target })
+        await journal.commit(a.filesWritten, a.filesDeleted, a.commitMessage)
       } catch (err) {
+        if (a && err instanceof HafezError && err.code === 'GIT_PUSH_FAILED') {
+          // Push-stage failure: the promote commit exists locally — keep the
+          // files and index them (same policy as batch); rolling back here
+          // would leave the worktree contradicting HEAD.
+          updateIndexPostCommit([a])
+          regenerateIndexSafe()
+          throw err
+        }
+        // Apply- or commit-stage failure: nothing was committed — restore.
         if (target === 'knowledge' && originalContent) {
           writeFileSync(filePath, originalContent)
           // Never unlink the file we just restored (SEC-4)
@@ -1028,6 +983,9 @@ export function createHafez(config: HafezConfig): Hafez {
         }
         throw err
       }
+      updateIndexPostCommit([a])
+      regenerateIndexSafe()
+      onWrite?.(slug, 'promote')
       return slug
     })
   }
@@ -1061,7 +1019,7 @@ export function createHafez(config: HafezConfig): Hafez {
     validateBatch: async (operations: BatchOperation[]) => validateBatchCore(operations),
     sync: async () => {
       if (readOnly) throw new HafezError('VALIDATION_FAILED', 'Hafez instance is read-only')
-      return withLock(() => gitSync(vaultPath))
+      return withLock(() => journal.sync())
     },
     children: async (slug: string) => {
       const idx = getIndex()
@@ -1098,12 +1056,11 @@ export function createHafez(config: HafezConfig): Hafez {
       s.recently_created = await rankRecents(s.recently_created, 'created', 'added')
       return s
     },
-    changelog: (since: string) => gitChangelog(vaultPath, since),
+    changelog: (since: string) => journal.changelog(since),
   }
 }
 
 export { HafezError } from './types.js'
-export type { Hafez, HafezConfig, HafezErrorCode, EntityType, EntityStatus, EntityQueryOpts, KnowledgeQueryOpts, EntityFrontmatter, KnowledgeFrontmatter, ParsedFile, SessionLogEntry, UpdateFields, UpdateResult, CreateEntityFields, CreateKnowledgeFields, QueryFilter, QueryResult, KnowledgeQueryResult, UnifiedResult, ValidationReport, BatchOperation, BatchResult, ReadDepth, ConfidenceLevel, LinkRelation, GitConfig, SearchResult, VaultStats, ChangelogEntry, KnowledgeSubtype } from './types.js'
-export { getBrief, getNextActions, findSection } from './sections.js'
-export { parseSessionLogHeading, parseSessionLog } from './parser.js'
-export { formatStats, formatChangelog, formatValidation } from './cli/format.js'
+export type { Hafez, HafezConfig, HafezErrorCode, EntityType, EntityStatus, EntityQueryOpts, KnowledgeQueryOpts, EntityFrontmatter, KnowledgeFrontmatter, ParsedFile, SessionLogEntry, UpdateFields, UpdateResult, CreateEntityFields, CreateKnowledgeFields, QueryFilter, QueryResult, KnowledgeQueryResult, UnifiedResult, ValidationReport, BatchOperation, BatchResult, ReadDepth, ConfidenceLevel, LinkRelation, GitConfig, Journal, SearchResult, VaultStats, ChangelogEntry, KnowledgeSubtype } from './types.js'
+export { getBrief, getNextActions, findSection } from './document.js'
+export { parseSessionLogHeading, parseSessionLog } from './document.js'

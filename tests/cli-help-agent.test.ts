@@ -1,9 +1,9 @@
 // tests/cli-help-agent.test.ts
 //
 // Structural assertions on the prompt-gate output. NOT a snapshot test —
-// snapshots churn the diff every time the preamble is tuned, and the drift
-// mitigation is handled separately in cli-schema-drift.test.ts. These tests
-// just verify the top-level promises of the help document.
+// snapshots churn the diff every time the preamble is tuned, and schema
+// fidelity is by-construction (generated sections derive from the Op Spec
+// table). These tests just verify the top-level promises of the help document.
 //
 // Token count ceiling uses a char/3.5 proxy, documented inline as a
 // conservative overcount (safe-fail direction — false positives force

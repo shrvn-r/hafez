@@ -11,6 +11,7 @@
 
 import type { z } from 'zod'
 import { getOpSchema, listOps, type FieldSchema } from './schema-introspect.js'
+import { validOpNames, validCreateKinds } from '../batch-ops.js'
 
 // --- did-you-mean (cheap Levenshtein) ---
 
@@ -89,7 +90,8 @@ export function opNameOf(raw: Record<string, unknown> | undefined): string | nul
   if (typeof op !== 'string') return null
   if (op === 'create') {
     const kind = raw.kind
-    if (typeof kind === 'string') return `create-${kind}`
+    const names = new Set(listOps().map(o => o.name))
+    if (typeof kind === 'string' && names.has(`create-${kind}`)) return `create-${kind}`
     return 'create'
   }
   const known = new Set(listOps().map(o => o.op))
@@ -124,7 +126,8 @@ function toStr(v: unknown): string {
   try { return JSON.stringify(v) } catch { return String(v) }
 }
 
-const VALID_OPS = ['update', 'create', 'capture', 'link', 'unlink', 'promote']
+// Derived from the Op Spec table — never hardcoded here.
+const VALID_OPS = validOpNames()
 
 /**
  * Format a single Zod issue into a readable block. Caller supplies the op
@@ -165,7 +168,7 @@ export function formatIssue(
       return [
         header,
         `  field: kind`,
-        `  issue: unknown kind ${got} (expected one of [entity, knowledge, session])`,
+        `  issue: unknown kind ${got} (expected one of [${validCreateKinds().join(', ')}])`,
         `  ${tip}`,
       ].join('\n')
     }

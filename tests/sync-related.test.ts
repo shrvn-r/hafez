@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { syncRelatedSection } from '../src/sections.js'
+import { syncRelatedSection } from '../src/document.js'
 
 describe('syncRelatedSection', () => {
   it('adds Related section for uncovered frontmatter links', () => {

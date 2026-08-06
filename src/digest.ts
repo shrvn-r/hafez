@@ -1,6 +1,7 @@
 // src/digest.ts
 import { z } from 'zod'
-import type { BatchOperation, UpdateFields, CreateKnowledgeFields } from './types.js'
+import type { BatchOperation, UpdateFields } from './types.js'
+import type { CreateSessionFieldsInput } from './batch-ops.js'
 
 // --- Schema ---
 
@@ -70,7 +71,9 @@ export function digest(input: DigestInput, existingSlugs: Set<string>, now: Date
   //    leak into the note body (the schema promises they are omitted).
   const noteBody = buildSessionNoteBody(input, knownTouched)
   const related = knownTouched
-  const noteFields: CreateKnowledgeFields = {
+  // Typechecked against the Op Spec's session-create schema so digest output
+  // can never silently diverge from what batch validation accepts.
+  const noteFields: CreateSessionFieldsInput = {
     synthesis: noteBody,
     'session-date': input.session_date,
     ...(related.length > 0 ? { related } : {}),

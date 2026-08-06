@@ -1,8 +1,8 @@
 // tests/sections.test.ts
 import { describe, it, expect } from 'vitest'
-import { getBrief, setBrief, removeBrief, getNextActions, addNextAction, completeNextAction, removeNextAction, clearNextActions, findSection, findNextStructuralHeading, STRUCTURAL_SECTIONS } from '../src/sections.js'
+import { getBrief, setBrief, removeBrief, getNextActions, addNextAction, completeNextAction, removeNextAction, clearNextActions, findSection, findNextStructuralHeading, STRUCTURAL_SECTIONS } from '../src/document.js'
 import { ALL_CONTRACTS, SUBTYPE_SECTIONS } from '../src/contracts.js'
-import { parseSessionLog } from '../src/parser.js'
+import { parseSessionLog } from '../src/document.js'
 
 describe('Brief', () => {
   const bodyWithBrief = `## Purpose\n\nSome purpose.\n\n## Brief\n\nThis is the brief content.\nMultiple lines here.\n\n## Session Log\n\n### 2026-03-20 — claude [progress]\nSummary: Did something`

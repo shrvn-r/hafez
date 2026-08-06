@@ -1,5 +1,67 @@
 # Changelog
 
+## 1.3.0 — 2026-08-06
+
+The CLI's error surface is now a documented contract — every command
+declares its flags, and exit codes are a stable, documented map. Plus a
+series of section-handling fixes for bugs that could corrupt document
+bodies in hand-edited vaults.
+
+### Highlights
+
+- **Documented exit codes** — `hafez help --agent` now carries the full
+  exit-code map, asserted by a contract test. Validation and usage
+  errors exit 2; slug collisions (5), git commit failures (6), and vault
+  lock exhaustion (7) get distinct codes instead of falling through to a
+  generic 1. Agents can branch on the exit code to self-repair payloads.
+- **Strict flag parsing** — every command parses through one declared-
+  flag parser. Unknown flags and missing flag values are usage errors
+  (exit 2) instead of silently ignored tokens, and a flag sitting where
+  another flag's value should be (`--brief --clear-actions`) errors
+  instead of storing the literal flag text.
+
+### Fixed
+
+- **Section headings with trailing whitespace** (common in hand-edited
+  Obsidian vaults) were invisible to section lookups: `--log` created a
+  duplicate Session Log section, the 10-entry archival never fired, and
+  summary-depth reads returned the full body.
+- **Mid-line mentions of section headings no longer corrupt bodies.**
+  Current-state/synthesis updates and session-log inserts previously
+  matched heading text anywhere in the body, which could truncate
+  content or splice entries into the Brief. Section operations now
+  target real headings only, and merge treats sections atomically.
+- **`update --status` / `--confidence` reject invalid values.** They
+  previously wrote straight into frontmatter (exit 0), after which the
+  index skipped the file. Now exit 2, matching batch.
+- **`promote` keeps its local commit when only the push fails.** An
+  unreachable remote no longer rewrites files after the commit landed,
+  leaving the worktree contradicting HEAD.
+- **Batch updates archive session logs at 10 entries**, matching
+  single-op updates and the documented contract.
+- **Failed commits leave the read index consistent** — a failed promote
+  or batch commit no longer drops rows from queries until a rebuild.
+- **`export` and `digest` honor the error contract** — missing `--okf`,
+  unknown export flags, and bad digest payloads all exit 2 (previously
+  exit 1, or silently accepted).
+- **Vaults under a directory named `sessions`** no longer classify every
+  file as a session file.
+- **`npm run build` keeps the CLI executable** — tsc recreated `dist/`
+  without the exec bit, breaking a symlinked install until the next
+  `install:local`.
+
+### Changed
+
+- **Usage errors exit 2** (previously 1) across all commands, including
+  empty `digest` stdin.
+- **`export --okf` skips dotfile `.md` files** (their slugs are
+  unreachable by every operation); `validate` no longer counts them.
+- **Batch validation reporting unified** — one summary header
+  (`Batch failed validation: N invalid operations (0 of M applied)`),
+  and a session create referencing an entity created earlier in the same
+  batch now warns at validate time instead of silently skipping at
+  apply.
+
 ## 1.2.0 — 2026-08-02
 
 Fixes from the first fully-external onboarding (Windows 11, PowerShell,

@@ -1,10 +1,10 @@
 // src/knowledge-index.ts
 // Generates the vault-root index.md covering entities (grouped by status) and
 // knowledge (grouped by domain) — local-only, auto-regenerated on every entity/knowledge write.
-import { readdirSync, readFileSync, writeFileSync, existsSync, statSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync } from 'fs'
 import { join, basename } from 'path'
-import { parseFilePath } from './vault.js'
-import { deriveSummary } from './sections.js'
+import { parseFilePath, scanVaultDir, kindDir } from './vault.js'
+import { deriveSummary } from './document.js'
 import { ENTITY_STATUSES } from './contracts.js'
 
 interface IndexEntry {
@@ -30,9 +30,11 @@ function formatEntry(item: IndexEntry): string {
 /** Parse every .md directly in dir (non-recursive — auto-excludes archive/), skipping malformed files. */
 function scanParsed(dir: string): Array<{ slug: string; fm: Record<string, any>; body: string }> {
   const docs: Array<{ slug: string; fm: Record<string, any>; body: string }> = []
-  for (const file of readdirSync(dir).filter(f => f.endsWith('.md'))) {
+  for (const file of scanVaultDir(dir)) {
     try {
-      const { frontmatter: fm, body } = parseFilePath(join(dir, file))
+      const parsed = parseFilePath(file)
+      const fm = parsed.frontmatter as Record<string, any>
+      const body = parsed.body
       if (!fm.name) continue
       docs.push({ slug: basename(file, '.md'), fm, body })
     } catch { continue }
@@ -62,8 +64,8 @@ export function ensureLocalExclude(vaultPath: string): void {
 }
 
 export function generateVaultIndex(vaultPath: string): void {
-  const entitiesDir = join(vaultPath, 'entities')
-  const knowledgeDir = join(vaultPath, 'knowledge')
+  const entitiesDir = join(vaultPath, kindDir('entity'))
+  const knowledgeDir = join(vaultPath, kindDir('knowledge'))
   const hasEntities = existsSync(entitiesDir)
   const hasKnowledge = existsSync(knowledgeDir)
   if (!hasEntities && !hasKnowledge) return

@@ -1,6 +1,6 @@
 // tests/git.test.ts
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
-import { gitCommitAndPush, gitSync } from '../src/git.js'
+import { gitCommitAndPush, gitSync, createGitJournal } from '../src/git.js'
 import { HafezError } from '../src/types.js'
 import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
@@ -723,5 +723,49 @@ describe('local-only vault (no remote configured)', () => {
     expect(log.latest?.message).toBe('add local item')
     const status = await git.status()
     expect(status.isClean()).toBe(true)
+  })
+})
+
+describe('createGitJournal fileTimes (recents tiebreak source)', () => {
+  // Dedicated repo: forged commit dates, entities/ paths (gitFileTimes only
+  // reports entities/ and knowledge/). Covers the %x00 log protocol and
+  // --diff-filter=A parsing that the in-memory Journal fake does not model.
+  const REPO = join(tmpdir(), 'hafez-test-filetimes-' + Date.now())
+
+  beforeAll(async () => {
+    mkdirSync(join(REPO, 'entities'), { recursive: true })
+    const git = simpleGit(REPO)
+    await git.init()
+    await git.addConfig('user.email', 'test@test.com')
+    await git.addConfig('user.name', 'Test')
+    const commitAt = async (file: string, content: string, date: string) => {
+      writeFileSync(join(REPO, file), content)
+      await git
+        .env({ PATH: process.env.PATH!, HOME: process.env.HOME!, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date })
+        .add(file)
+        .commit(`touch: ${file} @ ${date}`)
+    }
+    await commitAt('entities/older.md', 'v1', '2026-01-01T10:00:00Z')
+    await commitAt('entities/newer.md', 'v1', '2026-01-01T10:01:00Z')
+    // Re-modify the older file later — 'modified' must move, 'added' must not
+    await commitAt('entities/older.md', 'v2', '2026-01-01T12:00:00Z')
+  })
+
+  afterAll(() => rmSync(REPO, { recursive: true, force: true }))
+
+  it('modified mode reports the newest commit per file', async () => {
+    const journal = createGitJournal(REPO)
+    const times = await journal.fileTimes('modified')
+    const older = times.get('entities/older.md')!
+    const newer = times.get('entities/newer.md')!
+    expect(older > newer).toBe(true) // re-modified file is now the newest
+    expect(older.startsWith('2026-01-01T12:00:00')).toBe(true)
+  })
+
+  it('added mode reports the creation commit, unmoved by later edits', async () => {
+    const journal = createGitJournal(REPO)
+    const times = await journal.fileTimes('added')
+    expect(times.get('entities/older.md')!.startsWith('2026-01-01T10:00:00')).toBe(true)
+    expect(times.get('entities/newer.md')!.startsWith('2026-01-01T10:01:00')).toBe(true)
   })
 })

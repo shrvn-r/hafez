@@ -16,7 +16,8 @@ import {
   BatchOperationSchema,
   SessionLogSchema,
   UpdateFieldsSchema,
-} from './commands.js'
+  OP_SPECS,
+} from '../batch-ops.js'
 import { DigestInputSchema } from '../digest.js'
 import { ALIAS_KEYS } from '../contracts.js'
 
@@ -216,16 +217,8 @@ export const DIGEST_EXAMPLE: Record<string, unknown> = {
   agent: 'claude',
 }
 
-const OP_DESCRIPTIONS: Record<string, string> = {
-  'update': 'Update an entity or knowledge note (status, brief, next actions, session log, synthesis, …).',
-  'create-entity': 'Create a new entity (capture / entity / project).',
-  'create-knowledge': 'Create a new knowledge note (insight / plan subtype).',
-  'create-session': 'Create a new session note linked to an entity.',
-  'capture': 'Quick capture — a raw inbox item with no structure required.',
-  'link': 'Add a parent or related link between two entities.',
-  'unlink': 'Remove a parent or related link between two entities.',
-  'promote': 'Promote a capture to entity/project/knowledge, or an entity to project.',
-}
+// Descriptions live in the Op Spec table (src/batch-ops.ts) — one row per op.
+const OP_DESCRIPTIONS: Record<string, string> = Object.fromEntries(OP_SPECS.map(s => [s.name, s.description]))
 
 export function listOps(): OpCatalogEntry[] {
   return enumerateBranches().map(({ op, kind }) => {
@@ -350,12 +343,9 @@ function shouldStrip(path: string, _key: string): boolean {
 }
 
 function isDefaultIncluded(op: string, kind: string | undefined, fieldKey: string): boolean {
-  if (op === 'create' && kind === 'entity' && fieldKey === 'type') return true
-  if (op === 'create' && kind === 'knowledge' && (fieldKey === 'subtype' || fieldKey === 'synthesis')) return true
-  if (op === 'create' && kind === 'session' && fieldKey === 'synthesis') return true
-  if (op === 'update' && fieldKey === 'status') return true
-  if (op === 'capture' && fieldKey === 'notes') return true
-  return false
+  // Example-inclusion hints live in the Op Spec table, one row per op.
+  const spec = OP_SPECS.find(s => s.op === op && s.kind === kind)
+  return spec ? spec.exampleInclude.includes(fieldKey) : false
 }
 
 function sampleValue(field: FieldSchema): unknown {

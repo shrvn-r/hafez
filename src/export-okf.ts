@@ -7,8 +7,8 @@
 // regenerated indexes) until the bundle directory is deleted and re-exported.
 import { readdirSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { join, resolve, sep, basename } from 'path'
-import { parseFilePath, serializeFile } from './vault.js'
-import { deriveSummary } from './sections.js'
+import { parseFilePath, serializeFile, scanVaultDir, kindDir } from './vault.js'
+import { deriveSummary, WIKI_LINK_RE } from './document.js'
 
 export interface OkfExportReport {
   outDir: string
@@ -21,15 +21,11 @@ export interface OkfExportReport {
 
 type SourceKind = 'entity' | 'knowledge' | 'session'
 
-const KIND_DIRS: Array<{ dir: string; kind: SourceKind }> = [
-  { dir: 'entities', kind: 'entity' },
-  { dir: 'knowledge', kind: 'knowledge' },
-  { dir: 'sessions', kind: 'session' },
-]
+const SOURCE_KINDS: SourceKind[] = ['entity', 'knowledge', 'session']
+const KIND_DIRS: Array<{ dir: string; kind: SourceKind }> = SOURCE_KINDS.map(kind => ({ dir: kindDir(kind), kind }))
 
-// Local capturing variant of the shared WIKI_LINK_RE — captures display text in
-// group 2, which the shared regex's consumers don't need.
-const OKF_LINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g
+// The shared wiki-link syntax (document.ts) — group 1 slug, group 2 display.
+const OKF_LINK_RE = new RegExp(WIKI_LINK_RE.source, 'g')
 
 interface ParsedDoc {
   slug: string
@@ -37,12 +33,6 @@ interface ParsedDoc {
   kind: SourceKind
   fm: Record<string, any>
   body: string
-}
-
-function scanDir(dirPath: string): string[] {
-  try {
-    return readdirSync(dirPath).filter(f => f.endsWith('.md')).map(f => join(dirPath, f))
-  } catch { return [] }
 }
 
 function mapFrontmatter(doc: ParsedDoc): Record<string, any> {
@@ -87,7 +77,7 @@ export function exportOkf(vaultPath: string, outDir: string): OkfExportReport {
       let isPriorBundle = false
       if (existsSync(rootIndex)) {
         try {
-          isPriorBundle = parseFilePath(rootIndex).frontmatter.okf_version !== undefined
+          isPriorBundle = (parseFilePath(rootIndex).frontmatter as Record<string, any>).okf_version !== undefined
         } catch { /* unparseable — treat as not a bundle */ }
       }
       if (!isPriorBundle) {
@@ -104,13 +94,13 @@ export function exportOkf(vaultPath: string, outDir: string): OkfExportReport {
   // Enumerate and parse. Sessions are not in SQLite — disk enumeration is required.
   const docs: ParsedDoc[] = []
   for (const { dir, kind } of KIND_DIRS) {
-    for (const filePath of scanDir(join(resolvedVault, dir))) {
+    for (const filePath of scanVaultDir(join(resolvedVault, dir))) {
       const slug = basename(filePath, '.md')
       const relFile = `${dir}/${slug}.md`
       let fm: Record<string, any>, body: string
       try {
         const parsed = parseFilePath(filePath)
-        fm = parsed.frontmatter
+        fm = parsed.frontmatter as Record<string, any>
         body = parsed.body
       } catch (err) {
         report.skipped.push({ file: relFile, reason: `failed to parse (${(err as Error).message})` })
@@ -179,9 +169,9 @@ export function exportOkf(vaultPath: string, outDir: string): OkfExportReport {
 
   // Root index.md — the only place okf_version may appear
   const counts: Array<[string, number]> = [
-    ['entities', report.entities],
-    ['knowledge', report.knowledge],
-    ['sessions', report.sessions],
+    [kindDir('entity'), report.entities],
+    [kindDir('knowledge'), report.knowledge],
+    [kindDir('session'), report.sessions],
   ]
   const rootLines = ['# Vault Export', '']
   for (const [dir, count] of counts) {

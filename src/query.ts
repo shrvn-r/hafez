@@ -81,12 +81,14 @@ export function queryChildren(index: HafezIndex, parentSlug: string): { items: Q
   return queryEntities(index, { parent: parentSlug })
 }
 
-export function queryRelatedTo(index: HafezIndex, slug: string, relation?: string): { items: (QueryResult | KnowledgeQueryResult)[], total: number } {
+export function queryRelatedTo(index: HafezIndex, slug: string, relation?: string): { items: UnifiedResult[], total: number } {
   index.syncIfStale()
   const { items, total } = index.queryItems({ relatedTo: slug, relation })
   return {
     items: items.map(i =>
-      i.kind === 'entity' ? toQueryResult(i.slug, i) : toKnowledgeResult(i.slug, i)
+      i.kind === 'entity'
+        ? { ...toQueryResult(i.slug, i), kind: 'entity' as const }
+        : { ...toKnowledgeResult(i.slug, i), kind: 'knowledge' as const }
     ),
     total,
   }

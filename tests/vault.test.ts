@@ -1,6 +1,6 @@
 // tests/vault.test.ts
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { parseFilePath, parseContent, serializeFile, slugify, resolveFilePath, kindFromPath } from '../src/vault.js'
+import { parseFilePath, parseContent, serializeFile, slugify, resolveFilePath, kindFromPath, vaultKindFromPath } from '../src/vault.js'
 import { writeFileSync, mkdirSync, rmSync } from 'fs'
 import { join, posix, win32 } from 'path'
 import { tmpdir } from 'os'
@@ -78,6 +78,20 @@ describe('kindFromPath', () => {
   it('does not match "entities" as a filename or slug substring', () => {
     expect(kindFromPath(win32.join('C:\\vault', 'knowledge', 'entities.md'))).toBe('knowledge')
     expect(kindFromPath(posix.join('/vault', 'knowledge', 'legal-entities-note.md'))).toBe('knowledge')
+  })
+})
+
+describe('vaultKindFromPath', () => {
+  it('classifies session files by their immediate parent dir', () => {
+    expect(vaultKindFromPath(posix.join('/vault', 'sessions', '2026-08-05.md'))).toBe('session')
+    expect(vaultKindFromPath(win32.join('C:\\vault', 'sessions', '2026-08-05.md'))).toBe('session')
+  })
+
+  it('a vault living under a directory named "sessions" is not misclassified', () => {
+    // Only the immediate parent counts — an ancestor named sessions must not
+    // turn every entity into a session
+    expect(vaultKindFromPath(posix.join('/data/sessions/vault', 'entities', 'foo.md'))).toBe('entity')
+    expect(vaultKindFromPath(posix.join('/data/sessions/vault', 'knowledge', 'bar.md'))).toBe('knowledge')
   })
 })
 

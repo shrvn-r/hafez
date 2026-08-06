@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { createHafez } from '../index.js'
 import { HafezError } from '../types.js'
+import { parseArgs, UsageError } from './args.js'
 import { cmdRead, cmdQuery, cmdSearch, cmdCreate, cmdUpdate, cmdLink, cmdUnlink, cmdPromote, cmdValidate, cmdIndexRebuild, cmdBatch, cmdSync, cmdStats, cmdChangelog, cmdDigest, cmdCapture, type CommandOpts } from './commands.js'
 import { cmdSchema } from './commands-schema.js'
 import { renderAgentHelp } from './help-agent.js'
@@ -12,6 +13,7 @@ import { resolveVaultPath, noVaultMessage, cmdInit } from './resolve-vault.js'
 
 const COMMANDS: Record<string, (os: any, args: string[], opts: CommandOpts) => Promise<string>> = {
   read: cmdRead,
+  sync: cmdSync,
   query: cmdQuery,
   search: cmdSearch,
   create: cmdCreate,
@@ -25,7 +27,7 @@ const COMMANDS: Record<string, (os: any, args: string[], opts: CommandOpts) => P
   validate: cmdValidate,
   index: (os, args) => {
     if (args[0] === 'rebuild') return cmdIndexRebuild(os)
-    throw new Error('Usage: hafez index rebuild')
+    throw new UsageError('Usage: hafez index rebuild')
   },
   stats: cmdStats,
   changelog: cmdChangelog,
@@ -78,6 +80,34 @@ Global flags:
 
 Vault discovery: --vault flag > ~/.config/hafez/vault
 `
+
+/** Exit codes, documented in `hafez help --agent`. 0 = success; 4 is the
+ * mutate-succeeded-sync-failed warning path; anything unmapped = 1. */
+const EXIT_CODES: Record<string, number> = {
+  NOT_FOUND: 1,
+  VALIDATION_FAILED: 2,
+  GIT_PUSH_FAILED: 3,
+  SLUG_EXISTS: 5,
+  GIT_COMMIT_FAILED: 6,
+  VAULT_LOCKED: 7,
+}
+
+/** The one error → exit adapter. Usage errors (bad flags/args) are distinct
+ * from vault errors and from unknown crashes. */
+function report(err: unknown): never {
+  if (err instanceof UsageError) {
+    process.stderr.write(`Error: ${err.message}\n`)
+    process.exit(2)
+  }
+  if (err instanceof HafezError) {
+    process.stderr.write(`Error: ${err.message}\n`)
+    if (err.details?.length) {
+      for (const detail of err.details) process.stderr.write(`  - ${detail}\n`)
+    }
+    process.exit(EXIT_CODES[err.code] ?? 1)
+  }
+  failUnknown(err)
+}
 
 // Terminal handler for non-Hafez errors. Special-cases unbuilt better-sqlite3
 // bindings: npm 11+ blocks install scripts by default, so `npm install -g
@@ -148,14 +178,7 @@ export async function main(argv: string[]): Promise<void> {
       const result = await cmdSchema(null, args)
       process.stdout.write(result + '\n')
     } catch (err) {
-      if (err instanceof HafezError) {
-        process.stderr.write(`Error: ${err.message}\n`)
-        if (err.details?.length) {
-          for (const detail of err.details) process.stderr.write(`  - ${detail}\n`)
-        }
-        process.exit(2)
-      }
-      failUnknown(err)
+      report(err)
     }
     return
   }
@@ -180,55 +203,23 @@ export async function main(argv: string[]): Promise<void> {
 
   // export runs before Hafez instance creation — read-only, no auto-sync
   if (command === 'export') {
-    if (!args.includes('--okf')) {
-      process.stderr.write('Usage: hafez export --okf [--out <dir>]\n')
-      process.exit(1)
-    }
-    const outIdx = args.indexOf('--out')
-    let outDir = resolve(process.cwd(), 'okf-export')
-    if (outIdx !== -1) {
-      const outValue = args[outIdx + 1]
-      if (!outValue) {
-        process.stderr.write('Usage: hafez export --okf [--out <dir>]\n')
-        process.exit(1)
-      }
-      outDir = resolve(outValue)
-    }
-    const { exportOkf } = await import('../export-okf.js')
     try {
-      const report = exportOkf(vaultPath, outDir)
+      const EXPORT_USAGE = 'Usage: hafez export --okf [--out <dir>]'
+      const { flags } = parseArgs(args, { okf: 'boolean', out: 'string' }, EXPORT_USAGE)
+      if (flags.okf !== true) throw new UsageError(EXPORT_USAGE)
+      const outDir = typeof flags.out === 'string' ? resolve(flags.out) : resolve(process.cwd(), 'okf-export')
+      const { exportOkf } = await import('../export-okf.js')
+      const exportReport = exportOkf(vaultPath, outDir)
       if (json) {
-        process.stdout.write(JSON.stringify(report, null, 2) + '\n')
+        process.stdout.write(JSON.stringify(exportReport, null, 2) + '\n')
       } else {
-        const lines = [`Exported ${report.entities} entities, ${report.knowledge} knowledge, ${report.sessions} sessions to ${report.outDir}`]
-        for (const s of report.skipped) lines.push(`  skipped ${s.file}: ${s.reason}`)
-        if (report.unresolvedLinks > 0) lines.push(`  unresolved links: ${report.unresolvedLinks}`)
+        const lines = [`Exported ${exportReport.entities} entities, ${exportReport.knowledge} knowledge, ${exportReport.sessions} sessions to ${exportReport.outDir}`]
+        for (const s of exportReport.skipped) lines.push(`  skipped ${s.file}: ${s.reason}`)
+        if (exportReport.unresolvedLinks > 0) lines.push(`  unresolved links: ${exportReport.unresolvedLinks}`)
         process.stdout.write(lines.join('\n') + '\n')
       }
     } catch (err) {
-      failUnknown(err)
-    }
-    return
-  }
-
-  // sync is handled specially — always runs, not gated by MUTATING_COMMANDS
-  if (command === 'sync') {
-    const os = createHafez({ vaultPath, git: { push: false } })
-    try {
-      const result = await cmdSync(os, args)
-      process.stdout.write(result + '\n')
-    } catch (err) {
-      if (err instanceof HafezError) {
-        process.stderr.write(`Error: ${err.message}\n`)
-        if (err.details?.length) {
-          for (const detail of err.details) {
-            process.stderr.write(`  - ${detail}\n`)
-          }
-        }
-        const exitCodes: Record<string, number> = { NOT_FOUND: 1, VALIDATION_FAILED: 2, GIT_PUSH_FAILED: 3 }
-        process.exit(exitCodes[err.code] ?? 1)
-      }
-      failUnknown(err)
+      report(err)
     }
     return
   }
@@ -258,17 +249,7 @@ export async function main(argv: string[]): Promise<void> {
 
     process.stdout.write(result + '\n')
   } catch (err) {
-    if (err instanceof HafezError) {
-      process.stderr.write(`Error: ${err.message}\n`)
-      if (err.details?.length) {
-        for (const detail of err.details) {
-          process.stderr.write(`  - ${detail}\n`)
-        }
-      }
-      const exitCodes: Record<string, number> = { NOT_FOUND: 1, VALIDATION_FAILED: 2, GIT_PUSH_FAILED: 3 }
-      process.exit(exitCodes[err.code] ?? 1)
-    }
-    failUnknown(err)
+    report(err)
   }
 }
 

@@ -1,6 +1,6 @@
 // tests/parser.test.ts
 import { describe, it, expect } from 'vitest'
-import { parseSessionLogHeading, formatSessionLogEntry, parseSessionLog } from '../src/parser.js'
+import { parseSessionLogHeading, formatSessionLogEntry, parseSessionLog } from '../src/document.js'
 
 describe('parseSessionLogHeading', () => {
   it('parses v2 format with type tag', () => {

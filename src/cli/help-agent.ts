@@ -5,12 +5,13 @@
 // session and then produce valid batch JSON on first try.
 //
 // Hand-written sections: Preamble + Hard rules (prose, free-form).
-// Generated sections (wrapped in <!-- SECTION:name --> markers so the drift
-// test can parse them): op-catalog, critical-enums, batch-examples, digest.
+// Generated sections (wrapped in <!-- SECTION:name --> markers so tests can
+// parse them): op-catalog, critical-enums, batch-examples, digest.
 //
-// If the generated sections drift from the Zod schema, the drift test fails
-// loudly. Do NOT enumerate enum values inside the preamble or hard rules —
-// those come from schema-introspect.ts.
+// Generated sections derive from the Op Spec table (batch-ops.ts via
+// schema-introspect.ts), so they cannot drift from the Zod schemas. Do NOT
+// enumerate enum values inside the preamble or hard rules — those come from
+// schema-introspect.ts.
 
 import { listOps, getEnumValues, getOpExample, getOpSchema } from './schema-introspect.js'
 
@@ -161,6 +162,19 @@ const FOOTER = `## Lookup pointers
  * measured as char/3.5. The drift test in tests/cli-help-agent.test.ts
  * enforces the ceiling.
  */
+const EXIT_CODES_SECTION = `## Exit codes
+
+| code | meaning |
+|------|---------|
+| 0 | success |
+| 1 | not found / unknown error |
+| 2 | validation or usage error (bad flags, bad payload, core rejected the write) |
+| 3 | git push failed — the write IS committed locally |
+| 4 | write succeeded but the auto-sync after it failed |
+| 5 | slug already exists |
+| 6 | git commit failed — nothing was written to history |
+| 7 | vault locked by another hafez process — retry when it finishes |`
+
 export function renderAgentHelp(): string {
   return [
     PREAMBLE,
@@ -171,6 +185,8 @@ export function renderAgentHelp(): string {
     renderBatchExamples(),
     '',
     renderDigestSection(),
+    '',
+    EXIT_CODES_SECTION,
     '',
     FOOTER,
   ].join('\n')

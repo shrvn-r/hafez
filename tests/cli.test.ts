@@ -334,10 +334,16 @@ describe('export --okf', () => {
     expect(second.exitCode).toBe(0)
   })
 
-  it('errors without --okf', () => {
+  it('errors without --okf, as a usage error (exit 2)', () => {
     const r = run('export')
-    expect(r.exitCode).not.toBe(0)
+    expect(r.exitCode).toBe(2)
     expect(r.stderr).toContain('Usage: hafez export --okf')
+  })
+
+  it('rejects unknown flags instead of silently ignoring them', () => {
+    const r = run('export', '--okf', '--bogus', 'x')
+    expect(r.exitCode).toBe(2)
+    expect(r.stderr).toContain('Unknown flag --bogus')
   })
 })
 
@@ -347,5 +353,37 @@ describe('removed --next-action flag', () => {
     expect(r.exitCode).not.toBe(0)
     expect(r.stderr).toContain('--next-action was removed')
     expect(r.stderr).toContain('--add-action')
+  })
+})
+
+describe('exit-code contract (C5)', () => {
+  it('read of a missing slug exits 1 (NOT_FOUND)', () => {
+    expect(run('read', 'no-such-slug').exitCode).toBe(1)
+  })
+
+  it('an unknown flag exits 2 (usage error)', () => {
+    const r = run('read', 'test-proj', '--bogus')
+    expect(r.exitCode).toBe(2)
+    expect(r.stderr).toContain('Unknown flag --bogus')
+  })
+
+  it('a duplicate create exits 5 (SLUG_EXISTS)', () => {
+    const r = run('create', 'entity', 'Test Proj', '--type', 'project')
+    expect(r.exitCode).toBe(5)
+    expect(r.stderr).toContain('already exists')
+  })
+
+  it('an invalid direct update enum exits 2 and writes nothing', () => {
+    const r = run('update', 'test-proj', '--status', 'bananas')
+    expect(r.exitCode).toBe(2)
+    expect(r.stderr).toContain('Invalid status')
+    expect(readFileSync(join(VAULT, 'entities', 'test-proj.md'), 'utf-8')).not.toContain('bananas')
+  })
+
+  it('help --agent documents the exit codes', () => {
+    const { stdout, exitCode } = run('help', '--agent')
+    expect(exitCode).toBe(0)
+    expect(stdout).toContain('## Exit codes')
+    expect(stdout).toContain('vault locked')
   })
 })
