@@ -17,6 +17,9 @@ export function validateEntityFrontmatter(fm: Record<string, any>): string[] {
   if (!fm.created) errors.push('missing required field: created')
   if (!fm['last-touched']) errors.push('missing required field: last-touched')
   if (fm.domain !== undefined && !Array.isArray(fm.domain)) errors.push('entity domain must be an array')
+  if (fm.resource != null && !(Array.isArray(fm.resource) && fm.resource.every((v: unknown) => typeof v === 'string' && v !== ''))) {
+    errors.push('entity resource must be a list of non-empty strings')
+  }
   return errors
 }
 

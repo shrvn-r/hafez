@@ -14,13 +14,16 @@ import type { InternalHafez, InternalHafezConfig } from './internal.js'
 import { BatchOperationSchema, specFor, slugBearingOpNames, sessionAddressingOpNames, notFoundError, normalizeOperations, opErrorLine, batchInvalidHeader, type OpCheckContext, type ResolvedTarget, type FileLinks } from './batch-ops.js'
 import { applyOperation, buildEntityFrontmatter, buildKnowledgeFrontmatter, validateKindFields, type AppliedOp } from './apply.js'
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'fs'
-import { join, basename } from 'path'
+import { join, basename, resolve } from 'path'
 import { lock as lockVault } from 'proper-lockfile'
 
 export function createHafez(config: HafezConfig): Hafez {
-  const { vaultPath, readOnly = false, git: gitConfig = {}, onWrite, indexSync = 'read' } = config as InternalHafezConfig
+  const { readOnly = false, git: gitConfig = {}, onWrite, indexSync = 'read' } = config as InternalHafezConfig
   // When reads catch the index up with the files (src/internal.ts, off the
   // public types): 'once' is the CLI's (#269), 'manual' the graph server's (#271).
+  // Absolute from here on (#291): the Layout's kind match needs a separator
+  // before the kind dir, which a relative vault ('.') never gives `entities/x.md`.
+  const vaultPath = resolve(config.vaultPath)
 
   // The persistence seam (CONTEXT.md: Journal). Everything below talks to
   // history through this port; git is just the default adapter.

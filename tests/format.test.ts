@@ -54,7 +54,7 @@ describe('formatEntityHeader', () => {
       name: 'Resourced',
       type: 'entity',
       status: 'active',
-      resource: 'https://github.com/org/repo',
+      resource: ['https://github.com/org/repo'],
       created: '2026-01-01',
       'last-touched': '2026-03-14',
     }, '')

@@ -268,7 +268,7 @@ export const WRITE_LINE_OMITS: Record<Exclude<FooterForm, 'capture'>, Partial<Re
     remove_actions: 'the repeated form of remove_action, written by the same flag',
     clear_actions: 'drops lines unseen; the Footer drops one line by its Handle',
     description: SET_AT_CREATE,
-    resource: SET_AT_CREATE,
+    resource: 'added where the hook\'s no-match line asks; shown on every read it would attach unrelated folders',
     domain: SET_AT_CREATE,
     tags: SET_AT_CREATE,
   },

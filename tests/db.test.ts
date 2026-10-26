@@ -612,11 +612,11 @@ describe('description indexing', () => {
 })
 
 describe('resource indexing', () => {
-  it('returns resource for entities, null when unset', () => {
+  it('returns resource for entities, empty when unset', () => {
     const db = createIndex(TMP)
-    const { items } = db.queryItems({})
-    expect(items.find(i => i.slug === 'proj-a')!.resource).toBe('https://github.com/org/proj-a')
-    expect(items.find(i => i.slug === 'proj-b')!.resource).toBeNull()
+    const { items } = db.queryEntities({ filter: 'all' })
+    expect(items.find(i => i.slug === 'proj-a')!.resource).toEqual(['https://github.com/org/proj-a'])
+    expect(items.find(i => i.slug === 'proj-b')!.resource).toEqual([])
     db.close()
   })
 })

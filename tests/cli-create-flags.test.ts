@@ -10,7 +10,7 @@ import { mkdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createMemoryJournal } from './helpers/memory-journal.js'
-import { cmdCreate, cmdUpdate, CREATE_FLAGS } from '../src/cli/commands.js'
+import { cmdCreate, cmdUpdate, CREATE_FLAGS, ONE_FIELD_REPEATS } from '../src/cli/commands.js'
 import { cmdSchema } from '../src/cli/commands-schema.js'
 import { CreateEntityFieldsSchema } from '../src/batch-ops.js'
 import { splitList, UsageError } from '../src/cli/args.js'
@@ -49,7 +49,7 @@ const FLAG_CASES: FlagCase[] = [
   { flag: 'type', value: 'project', applies: ['entity'], assert: r => expect(r.frontmatter.type).toBe('project') },
   { flag: 'purpose', value: 'The stated purpose', applies: ['entity'], assert: r => expect(r.body).toContain('The stated purpose') },
   { flag: 'description', value: 'One-line summary', applies: ['entity', 'knowledge'], assert: r => expect(r.frontmatter.description).toBe('One-line summary') },
-  { flag: 'resource', value: 'https://example.com/repo', applies: ['entity'], assert: r => expect(r.frontmatter.resource).toBe('https://example.com/repo') },
+  { flag: 'resource', value: 'https://example.com/repo', applies: ['entity'], assert: r => expect(r.frontmatter.resource).toEqual(['https://example.com/repo']) },
   { flag: 'domain', value: 'engineering', applies: ['entity', 'knowledge'], assert: r => expect(r.frontmatter.domain).toContain('engineering') },
   { flag: 'parent', value: 'alpha', applies: ['entity'], assert: r => expect(r.frontmatter.parent).toBe('alpha') },
   { flag: 'related', value: 'alpha', applies: ['entity', 'knowledge'], assert: r => expect(r.frontmatter.related).toContain('alpha') },
@@ -222,6 +222,20 @@ describe('one comma-list parser — trimmed, empty segments dropped', () => {
   })
 })
 
+describe('--resource repeats on create (#305)', () => {
+  it('--resource repeated writes every value, in order', async () => {
+    const slug = (await cmdCreate(os, ['entity', 'Cw Two Resources', '--type', 'project', '--resource', 'https://github.com/org/repo', '--resource', 'https://docs.example.com'])).trim()
+    expect(((await os.read(slug)) as any).frontmatter.resource).toEqual(['https://github.com/org/repo', 'https://docs.example.com'])
+  })
+
+  it('--resource "" with a value is a usage error, nothing written', async () => {
+    const err = await cmdCreate(os, ['entity', 'Cw Mixed Resource', '--type', 'project', '--resource', '', '--resource', 'https://a.example.com']).then(() => null, e => e)
+    expect(err).toBeInstanceOf(UsageError)
+    expect(err.message).toContain('--resource ""')
+    await expect(os.read('cw-mixed-resource')).rejects.toThrow()
+  })
+})
+
 describe('Write Line parser on create — repeat-append, repeated scalar, --confidence', () => {
   it('--add-action repeated appends every value, in order', async () => {
     const slug = (await cmdCreate(os, ['entity', 'Cw Repeat Add', '--type', 'project', '--add-action', 'First @dev', '--add-action', 'Second @dev'])).trim()
@@ -242,11 +256,13 @@ describe('Write Line parser on create — repeat-append, repeated scalar, --conf
     })
   }
 
-  // A repeated flag maps to the array form of its field — that field must exist.
+  // A repeated flag maps to the array form of its field — that field must
+  // exist; a one-field repeat (--resource) maps to its own field, a list.
   it('every repeatable create flag has an array field on the entity shape', () => {
     const keys = Object.keys(CreateEntityFieldsSchema.shape)
     for (const [flag, type] of Object.entries(CREATE_FLAGS)) {
-      if (type === 'repeat') expect(keys).toContain(`${flag.replace(/-/g, '_')}s`)
+      const field = flag.replace(/-/g, '_')
+      if (type === 'repeat') expect(keys).toContain(ONE_FIELD_REPEATS.has(flag) ? field : `${field}s`)
     }
   })
 

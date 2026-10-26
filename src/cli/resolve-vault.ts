@@ -49,8 +49,8 @@ export function isVault(dirPath: string): boolean {
  * If config exists but points to a bad path, returns an error object instead.
  */
 export function resolveVaultPath(flagValue?: string, at: ConfigHome = processHome()): string | null | { error: string } {
-  // 1. Explicit flag
-  if (flagValue) return flagValue
+  // 1. Explicit flag, absolute as the config's is (#291)
+  if (flagValue) return resolve(flagValue)
 
   // 2. Config file
   const configValue = readVaultConfig(at)
@@ -128,7 +128,7 @@ export function cmdInit(args: string[], flagValue?: string): void {
 
   // Bare `hafez init` — show current resolution status
   if (flagValue) {
-    process.stdout.write(`Vault: ${flagValue} (--vault flag)\n`)
+    process.stdout.write(`Vault: ${resolve(flagValue)} (--vault flag)\n`)
     return
   }
 

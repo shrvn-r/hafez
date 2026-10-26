@@ -394,3 +394,27 @@ describe('mergeVaultContent', () => {
     expect(merged).toContain('Local work')
   })
 })
+
+describe('resource (#304)', () => {
+  it('two machines each add a value: the merged file holds both', () => {
+    const base = { name: 'R', type: 'project', status: 'active', created: '2026-01-01', 'last-touched': '2026-03-23' }
+    const remote = vaultFile({ ...base, resource: ['https://github.com/org/r', '/home/a/r'] })
+    const local = vaultFile({ ...base, resource: ['https://github.com/org/r', '/home/b/r'] })
+    const parsed = parseContent(mergeVaultContent(remote, local, 'entity'))
+    expect(parsed.frontmatter.resource).toEqual(['https://github.com/org/r', '/home/b/r', '/home/a/r'])
+  })
+
+  it('an ssh and an https spelling of one repo from two machines merge to one value, the local spelling', () => {
+    const base = { name: 'R', type: 'project', status: 'active', created: '2026-01-01', 'last-touched': '2026-03-23' }
+    const remote = vaultFile({ ...base, resource: ['https://github.com/org/r', '/home/a/r'] })
+    const local = vaultFile({ ...base, resource: ['git@github.com:Org/R.git'] })
+    expect(parseContent(mergeVaultContent(remote, local, 'entity')).frontmatter.resource).toEqual(['git@github.com:Org/R.git', '/home/a/r'])
+  })
+
+  it('a legacy scalar on one side unions with the other side\'s list', () => {
+    const base = { name: 'R', type: 'project', status: 'active', created: '2026-01-01', 'last-touched': '2026-03-23' }
+    const remote = vaultFile({ ...base, resource: 'https://github.com/org/r' })
+    const local = vaultFile({ ...base, resource: ['https://github.com/org/r', '/home/b/r'] })
+    expect(parseContent(mergeVaultContent(remote, local, 'entity')).frontmatter.resource).toEqual(['https://github.com/org/r', '/home/b/r'])
+  })
+})

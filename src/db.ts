@@ -29,8 +29,9 @@ import { localDay } from './dates.js'
 //     added-date stamp stripped.
 // v12: sessions are indexed (#35); session_date column.
 // v13: action_added column, the open actions' added days (the Graph's stale-action count, #271).
+// v14: resource holds the entity's list as JSON (#304).
 // Existing instances will fully rebuild the index on first access after upgrade.
-export const SCHEMA_VERSION = '13'
+export const SCHEMA_VERSION = '14'
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS items (
@@ -117,7 +118,7 @@ interface IndexItem {
   file_hash: string
   subtype: string | null
   description: string | null
-  resource: string | null
+  resource: string | null          // the entity's list as JSON, null when none
   brief: string | null
   session_log_count: number
   last_session_date: string | null
@@ -341,7 +342,7 @@ function queryItemsFn(db: InstanceType<typeof Database>, opts: QueryOpts): Index
   }
 
   // A session's one day is its session date: the window reads it where an
-  // entity or plan has last_touched.
+  // entity or knowledge note has last_touched.
   if (opts.since) {
     conditions.push('COALESCE(i.last_touched, i.session_date) >= @since')
     params.since = opts.since
@@ -579,6 +580,15 @@ let afterScanHook: (() => void) | null = null
 /** @internal */
 export function __setAfterScanHook(fn: (() => void) | null): void { afterScanHook = fn }
 
+// Internal test seam — NOT public API. Fires inside indexFile at two steps of
+// a note's replacement, so a second instance's sync can be run against it
+// (#293): 'changed' once the hash is found changed, before the write
+// transaction begins; 'deleted' inside it, between the delete and the insert.
+type ReplaceStep = 'changed' | 'deleted'
+let replaceHook: ((step: ReplaceStep) => void) | null = null
+/** @internal */
+export function __setReplaceHook(fn: ((step: ReplaceStep) => void) | null): void { replaceHook = fn }
+
 // --- createIndex: overloaded for write and readonly modes ---
 
 /** `sync`: what `syncForRead`, run first by every read-surface query, does.
@@ -737,14 +747,31 @@ export function createIndex(vaultPath: string, opts?: IndexOpts & { readonly?: b
   const insertLinkStmt = db.prepare('INSERT OR IGNORE INTO links (source, target, relation) VALUES (?, ?, ?)')
   const getHashStmt = db.prepare('SELECT file_hash FROM items WHERE slug = ?')
 
+  const storedHash = (slug: string): string | undefined =>
+    (getHashStmt.get(slug) as { file_hash: string } | undefined)?.file_hash
+
   function indexFile(filePath: string, kind: VaultKind, knownSlugs?: Set<string>): void {
     const content = readFileSync(filePath, 'utf-8')
     const slug = basename(filePath, '.md')
     const hash = hashContent(content)
 
-    // Skip if unchanged
-    const existing = getHashStmt.get(slug) as { file_hash: string } | undefined
-    if (existing && existing.file_hash === hash) return
+    // Skip if unchanged — checked outside any transaction, so a sync over
+    // notes another process has already indexed takes no write lock.
+    if (storedHash(slug) === hash) return
+
+    replaceHook?.('changed')
+    // One IMMEDIATE transaction per note (#293): a second process replacing
+    // the same note waits out busy_timeout here instead of interleaving its
+    // delete and insert with ours. Per note, never per sync pass — a pass-long
+    // write lock on a large pull outlasts the other process's busy_timeout.
+    // (A full rebuild is one transaction already; this nests in it.)
+    replaceTransaction.immediate(filePath, kind, slug, hash, knownSlugs)
+  }
+
+  const replaceTransaction = db.transaction((filePath: string, kind: VaultKind, slug: string, hash: string, knownSlugs?: Set<string>): void => {
+    // Re-checked under the write lock: another process may have replaced the
+    // row since the check above, and then there is nothing left to do.
+    if (storedHash(slug) === hash) return
 
     let fm: Record<string, any>, body: string
     try {
@@ -792,7 +819,7 @@ export function createIndex(vaultPath: string, opts?: IndexOpts & { readonly?: b
       file_hash: hash,
       subtype: kind === 'knowledge' ? (fm.subtype ?? DEFAULT_KNOWLEDGE_SUBTYPE) : null,
       description: fm.description ?? null,
-      resource: kind === 'entity' ? (fm.resource ?? null) : null,
+      resource: kind === 'entity' && fm.resource?.length ? JSON.stringify(fm.resource) : null,
       brief,
       session_log_count: logs.length,
       last_session_date: lastLog?.date ?? null,
@@ -810,6 +837,7 @@ export function createIndex(vaultPath: string, opts?: IndexOpts & { readonly?: b
     // the same path hafez's own mutations take via upsertFromFile.
     deleteItemStmt.run(slug)
     deleteLinksStmt.run(slug)
+    replaceHook?.('deleted')
     insertStmt.run(item)
 
     // Index related links
@@ -851,7 +879,7 @@ export function createIndex(vaultPath: string, opts?: IndexOpts & { readonly?: b
         insertLinkStmt.run(slug, targetSlug, 'mention')
       }
     }
-  }
+  })
 
   const rebuildTransaction = db.transaction(() => {
     // Watermark the scan by when it STARTED (see syncIfStale).
@@ -932,7 +960,8 @@ export function createIndex(vaultPath: string, opts?: IndexOpts & { readonly?: b
     }
   }
 
-  function upsertFromFile(slug: string, kind: VaultKind): void {
+  // The forced re-index is one unit too: the replacement nests inside it.
+  const upsertTransaction = db.transaction((slug: string, kind: VaultKind): void => {
     const filePath = join(vaultPath, kindDir(kind), `${slug}.md`)
     if (existsSync(filePath)) {
       // Force re-index by clearing cached hash
@@ -940,6 +969,10 @@ export function createIndex(vaultPath: string, opts?: IndexOpts & { readonly?: b
       deleteLinksStmt.run(slug)
       indexFile(filePath, kind)
     }
+  })
+
+  function upsertFromFile(slug: string, kind: VaultKind): void {
+    upsertTransaction.immediate(slug, kind)
   }
 
   function removeItem(slug: string): void {
@@ -1003,7 +1036,7 @@ function toQueryResult(slug: string, row: Record<string, any>): QueryResult {
     type: row.type,
     status: row.status,
     description: row.description ?? null,
-    resource: row.resource ?? null,
+    resource: row.resource ? JSON.parse(row.resource) : [],
     domain: row.domain ?? [],
     last_touched: row.last_touched,
     next_action: row.next_action ?? null,

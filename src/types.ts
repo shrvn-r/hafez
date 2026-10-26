@@ -71,7 +71,7 @@ export interface KnowledgeQueryOpts {
   domain?: string
   confidence?: ConfidenceLevel
   subtype?: KnowledgeSubtype
-  since?: string          // ISO date — last_touched >= since (plan subtype only carries last-touched)
+  since?: string          // ISO date — last_touched >= since
   before?: string         // ISO date — last_touched <= before
   createdSince?: string   // ISO date — created >= createdSince
   createdBefore?: string  // ISO date — created <= createdBefore
@@ -126,7 +126,7 @@ export interface EntityFrontmatter {
   type: EntityType
   status: EntityStatus
   description?: string
-  resource?: string
+  resource?: string[]
   domain?: string[]
   parent?: string
   related?: string[]
@@ -149,7 +149,7 @@ export interface KnowledgeFrontmatter {
   tags?: string[]
   'session-date'?: string
   status?: PlanStatus            // plan subtype only
-  'last-touched'?: string         // plan subtype only
+  'last-touched'?: string         // stamped by every update; at create only with status
 }
 
 // --- Parsed file ---
@@ -210,7 +210,7 @@ export interface UpdateFields {
   parent?: string                    // entity-only; sets the parent link (slug must exist)
   // Domain (shared) + knowledge-only metadata
   description?: string | null      // '' or null clears
-  resource?: string | null         // entity-only canonical URI, '' or null clears
+  resource?: string | string[] | null  // entity-only; appends, skipping duplicates; null, '' or [] clears
   domain?: string[]
   confidence?: ConfidenceLevel
   tags?: string[]
@@ -227,13 +227,14 @@ export interface UpdateResult {
   completed_actions?: string[]           // texts of the lines complete_actions matched, in query order
   removed_actions?: string[]             // texts of the lines remove_actions matched, in query order
   logged?: true                          // a session log entry was written: given, or mechanised by the Spine
+  resource_added?: string[]              // the values resource added, the duplicate rule applied ([]: every one already held)
 }
 
 export interface CreateEntityFields {
   type: EntityType
   purpose?: string
   description?: string
-  resource?: string
+  resource?: string | string[]
   domain?: string[]
   parent?: string
   related?: string[]
@@ -273,7 +274,7 @@ export interface QueryResult {
   type: EntityType
   status: EntityStatus
   description: string | null
-  resource: string | null
+  resource: string[]               // entity-only; empty when none
   domain: string[]
   last_touched: string
   next_action: string | null

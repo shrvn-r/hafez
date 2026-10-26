@@ -6,7 +6,7 @@ Two renders of what `hafez read` prints for a slug that does not exist. Each fen
 Error: no entity or knowledge note 'meeting-transcriber'.
 hafez read meeting-transcript-pipeline
 hafez read farsi-meeting-transcription-script
-hafez create entity "meeting transcriber" --type <project|entity> --parent <slug you read, or its parent> --description "<one sentence>" --brief "<where things stand>" --add-action "<next step>"
+hafez create entity "meeting transcriber" --type <project|entity> --parent <slug you read, or its parent> --resource <. if the work lives in this folder> --description "<one sentence>" --brief "<where things stand>" --add-action "<next step>"
 ```
 
 ## No close slug
@@ -14,5 +14,5 @@ hafez create entity "meeting transcriber" --type <project|entity> --parent <slug
 ```
 Error: no entity or knowledge note 'launchpads'.
 hafez search "launchpads"
-hafez create entity "launchpads" --type <project|entity> --parent <slug you read, or its parent> --description "<one sentence>" --brief "<where things stand>" --add-action "<next step>"
+hafez create entity "launchpads" --type <project|entity> --parent <slug you read, or its parent> --resource <. if the work lives in this folder> --description "<one sentence>" --brief "<where things stand>" --add-action "<next step>"
 ```

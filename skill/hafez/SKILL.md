@@ -7,7 +7,7 @@ description: >
   to check the vault or clean it up, or wants to update or reconfigure Hafez
   ("upgrade hafez", "set up hafez"). Also the reference to read when no
   Hafez block is in your instructions.
-hash: c52f079e667f
+hash: 51b62e879085
 ---
 
 # Hafez
@@ -23,7 +23,7 @@ Open actions on an entity you read are yours: tick what landed, drop what is dea
 ## Create
 
 ```
-hafez create entity "<name>" --type <project|entity> --parent <slug you read, or its parent> --description "<one sentence>" --brief "<where things stand>" --add-action "<next step>"
+hafez create entity "<name>" --type <project|entity> --parent <slug you read, or its parent> --resource <. if the work lives in this folder> --description "<one sentence>" --brief "<where things stand>" --add-action "<next step>"
 hafez create knowledge "<name>" --synthesis "<the insight>" --confidence <observation|pattern|principle> --related <slug>
 ```
 

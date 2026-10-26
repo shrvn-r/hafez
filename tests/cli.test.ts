@@ -165,7 +165,7 @@ describe('CLI', () => {
   })
 
   // #91: the miss render, on stderr, exit 1 (the not-found code).
-  const CREATE_TAIL = '--type <project|entity> --parent <slug you read, or its parent> --description "<one sentence>" --brief "<where things stand>" --add-action "<next step>"'
+  const CREATE_TAIL = '--type <project|entity> --parent <slug you read, or its parent> --resource <. if the work lives in this folder> --description "<one sentence>" --brief "<where things stand>" --add-action "<next step>"'
 
   it('read miss with close slugs prints them read-ready, then the create line', () => {
     const { stdout, stderr, exitCode } = run('read', 'test-projects')
@@ -345,7 +345,21 @@ describe('resource flag', () => {
 
     const q = run('query', '--filter', 'all', '--json')
     const data = JSON.parse(q.stdout)
-    expect(data.items.find((i: any) => i.slug === 'resource-cli-proj').resource).toBe('https://example.com/repo')
+    expect(data.items.find((i: any) => i.slug === 'resource-cli-proj').resource).toEqual(['https://example.com/repo'])
+  })
+
+  it('several values: one ` · `-joined header line, the list in read --json', () => {
+    expect(run('create', 'entity', 'Two Places', '--type', 'project', '--resource', 'https://example.com/a').exitCode).toBe(0)
+    expect(run('update', 'two-places', '--resource', '/srv/two-places').exitCode).toBe(0)
+    const lines = run('read', 'two-places').stdout.split('\n').filter(l => l.startsWith('resource:'))
+    expect(lines).toEqual(['resource: https://example.com/a · /srv/two-places'])
+    const json = JSON.parse(run('read', 'two-places', '--json').stdout)
+    expect(json.frontmatter.resource).toEqual(['https://example.com/a', '/srv/two-places'])
+  })
+
+  it('no resource line when the entity has none', () => {
+    expect(run('create', 'entity', 'No Place', '--type', 'entity').exitCode).toBe(0)
+    expect(run('read', 'no-place').stdout).not.toMatch(/^resource:/m)
   })
 
   it('update --resource on knowledge is rejected', () => {

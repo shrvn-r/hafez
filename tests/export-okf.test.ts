@@ -6,6 +6,8 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { randomUUID } from 'crypto'
+import matter from 'gray-matter'
+import yaml from 'js-yaml'
 
 let vault: string
 let out: string
@@ -33,9 +35,13 @@ function writeKnowledge(slug: string, fm: Record<string, any>, body = '## Synthe
 
 // An exported OKF document is not vault frontmatter (name→title, derived
 // timestamp), so it is read back as OkfFrontmatter, not through parseFilePath.
+// Its frontmatter is read raw: the vault parser would coerce a scalar
+// `resource` into a list.
 function readOkf(path: string): { frontmatter: OkfFrontmatter; body: string } {
-  const { frontmatter, body } = parseContent(readFileSync(path, 'utf-8'))
-  return { frontmatter: frontmatter as OkfFrontmatter, body }
+  const content = readFileSync(path, 'utf-8')
+  const { body } = parseContent(content)
+  const { data } = matter(content, { engines: { yaml: (s: string) => yaml.load(s, { schema: yaml.JSON_SCHEMA }) as object } })
+  return { frontmatter: data as OkfFrontmatter, body }
 }
 
 function writeSession(slug: string, fm: Record<string, any>, body = '## Summary\n\nSession summary line.\n') {
@@ -66,6 +72,7 @@ describe('exportOkf frontmatter mapping', () => {
     expect(ent.title).toBe('My Project')
     expect(ent.description).toBe('A project')
     expect(ent.resource).toBe('https://github.com/org/repo')
+    expect(ent.resources).toBeUndefined()
     expect(ent.tags).toEqual(['infra'])
     expect(ent.timestamp).toBe('2026-02-02')
     // Remaining original keys carried verbatim; name dropped
@@ -93,6 +100,17 @@ describe('exportOkf frontmatter mapping', () => {
     expect(kn.type).toBe('knowledge/insight')
     expect(kn.description).toBe('Insight line.')
     expect(kn.timestamp).toBe('2026-01-01')
+  })
+
+  it('several resource values: the first as `resource`, the whole list under `resources` (#304)', () => {
+    writeEntity('multi', {
+      name: 'Multi', type: 'project', status: 'active', created: '2026-01-01', 'last-touched': '2026-01-01',
+      resource: ['https://github.com/org/multi', '/srv/multi'],
+    })
+    exportOkf(vault, out)
+    const ent = readOkf(join(out, 'entities', 'multi.md')).frontmatter
+    expect(ent.resource).toBe('https://github.com/org/multi')
+    expect(ent.resources).toEqual(['https://github.com/org/multi', '/srv/multi'])
   })
 
   it('uses first Brief line as entity description fallback', () => {

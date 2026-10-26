@@ -25,8 +25,9 @@ import { bodyTemplate, knowledgeBodyTemplate, sessionBodyTemplate } from './temp
 import { formatSessionLogEntry, stampAction, documentFor, documentForFile, type Doc } from './document.js'
 import { sectionsFor, statusesFor, unreachableFields, describeTarget, type DocTarget } from './contracts.js'
 import { localDay } from './dates.js'
+import { addResources } from './resource.js'
 import { detectAgent } from './harness.js'
-import { specFor, loggedFields, type OpSpecName } from './batch-ops.js'
+import { specFor, loggedFields, resourceList, type OpSpecName } from './batch-ops.js'
 import type { BatchOperation, BatchResult, CreateEntityFields, DeletableKind, CreateKnowledgeFields, KnowledgeSubtype, UpdateFields, UpdateResult } from './types.js'
 import { HafezError } from './types.js'
 
@@ -161,7 +162,8 @@ export function buildEntityFrontmatter(name: string, ef: CreateEntityFields, exi
   }
   if (ef.tags?.length) fm.tags = ef.tags
   if (ef.description) fm.description = ef.description
-  if (ef.resource) fm.resource = ef.resource
+  const resource = addResources([], resourceList(ef.resource))
+  if (resource.length > 0) fm.resource = resource
   const errors = validateEntityFrontmatter(fm)
   if (errors.length > 0) throw new HafezError('VALIDATION_FAILED', 'Invalid entity frontmatter', errors)
   return fm
@@ -321,8 +323,9 @@ function applyUpdateFields(doc: Doc, fm: Record<string, any>, body: string, fiel
     else fm.description = fields.description
   }
   if (fields.resource !== undefined) {
-    if (fields.resource === '' || fields.resource === null) delete fm.resource
-    else fm.resource = fields.resource
+    const values = resourceList(fields.resource)
+    if (values.length === 0) delete fm.resource
+    else fm.resource = addResources(fm.resource ?? [], values)
   }
   if (fields.confidence !== undefined) fm.confidence = fields.confidence
   if (fields.parent !== undefined) fm.parent = fields.parent
@@ -452,7 +455,15 @@ function applyUpdate(op: Extract<BatchOperation, { op: 'update' }>, ctx: ApplyCo
   // The related list before the fields replace it: the diff against the new
   // one is what the edge writer and dropper mirror on the targets.
   const relatedBefore: string[] = fm.related ?? []
-  const applied = applyUpdateFields(doc, fm, body, withMechanisedLog(kind, op.fields))
+  // The values `resource` adds by the duplicate rule. None (every one already
+  // held) is no write: the update goes on without the field, so neither the
+  // mechanised log entry nor the tell line names it.
+  const resourceValues = resourceList(op.fields.resource)
+  const held: string[] = fm.resource ?? []
+  const resourceAdded = resourceValues.length > 0 ? addResources(held, resourceValues).slice(held.length) : undefined
+  const { resource: _resource, ...withoutResource } = op.fields
+  const fields = resourceAdded?.length === 0 ? withoutResource : op.fields
+  const applied = applyUpdateFields(doc, fm, body, withMechanisedLog(kind, fields))
   fm = applied.fm
   body = applied.body
 
@@ -500,7 +511,7 @@ function applyUpdate(op: Extract<BatchOperation, { op: 'update' }>, ctx: ApplyCo
     commitMessage: `update: ${op.slug}`,
     indexRemovals: [],
     indexUpserts: [{ slug: op.slug, kind }, ...touches.map(t => t.upsert)],
-    updateResult: applied.updateResult,
+    updateResult: { ...applied.updateResult, ...(resourceAdded && { resource_added: resourceAdded }) },
   }
 }
 

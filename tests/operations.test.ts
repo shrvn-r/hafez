@@ -479,9 +479,9 @@ describe('resource field', () => {
     const os = makeOS()
     const slug = await os.create('entity', 'Resourced Entity', { type: 'project', resource: 'https://github.com/org/repo' })
     const { frontmatter } = readEntity(join(VAULT, 'entities/resourced-entity.md'))
-    expect(frontmatter.resource).toBe('https://github.com/org/repo')
+    expect(frontmatter.resource).toEqual(['https://github.com/org/repo'])
     const { items } = await os.query({ filter: 'all' })
-    expect(items.find(i => i.slug === slug)!.resource).toBe('https://github.com/org/repo')
+    expect(items.find(i => i.slug === slug)!.resource).toEqual(['https://github.com/org/repo'])
   })
 
   it('update sets resource and empty string clears it', async () => {
@@ -489,7 +489,7 @@ describe('resource field', () => {
     await os.create('entity', 'Resource Update Target', { type: 'entity' })
     await os.update('resource-update-target', { resource: 'https://example.com/dashboard' })
     let fm = readEntity(join(VAULT, 'entities/resource-update-target.md')).frontmatter
-    expect(fm.resource).toBe('https://example.com/dashboard')
+    expect(fm.resource).toEqual(['https://example.com/dashboard'])
     await os.update('resource-update-target', { resource: '' })
     fm = readEntity(join(VAULT, 'entities/resource-update-target.md')).frontmatter
     expect(fm.resource).toBeUndefined()
@@ -507,7 +507,7 @@ describe('resource field', () => {
     await os.batch([
       { op: 'create', kind: 'entity', name: 'Batch Resource Entity', fields: { type: 'entity', resource: 'https://example.com/batch' } },
     ])
-    expect(readEntity(join(VAULT, 'entities/batch-resource-entity.md')).frontmatter.resource).toBe('https://example.com/batch')
+    expect(readEntity(join(VAULT, 'entities/batch-resource-entity.md')).frontmatter.resource).toEqual(['https://example.com/batch'])
   })
 })
 

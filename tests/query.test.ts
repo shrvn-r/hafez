@@ -340,9 +340,9 @@ describe('description in query results', () => {
 })
 
 describe('resource in query results', () => {
-  it('entity results include resource (null when unset)', () => {
+  it('entity results include resource (empty when unset)', () => {
     const { items } = queryEntities(index, { filter: 'active' })
-    expect(items.find(i => i.slug === 'simorgh')!.resource).toBe('https://github.com/org/simorgh')
-    expect(items.find(i => i.slug === 'proj-a')!.resource).toBeNull()
+    expect(items.find(i => i.slug === 'simorgh')!.resource).toEqual(['https://github.com/org/simorgh'])
+    expect(items.find(i => i.slug === 'proj-a')!.resource).toEqual([])
   })
 })

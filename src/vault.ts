@@ -159,7 +159,7 @@ export function kindFromPath(filePath: string): 'entity' | 'knowledge' {
  * hand-edited YAML). Parsing coerces them here; merge.ts unions them on
  * conflict — one list, so a new list-valued field cannot be normalized on
  * read and then overwritten wholesale on merge. */
-export const ARRAY_FIELDS = ['related', 'tags', 'domain']
+export const ARRAY_FIELDS = ['related', 'tags', 'domain', 'resource']
 
 function normalizeFrontmatter(fm: Record<string, any>): Record<string, any> {
   for (const field of ARRAY_FIELDS) {

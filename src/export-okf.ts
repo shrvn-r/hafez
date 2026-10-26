@@ -32,13 +32,15 @@ const OKF_LINK_RE = new RegExp(WIKI_LINK_RE.source, 'g')
 
 /** Frontmatter of an exported OKF document. Not vault frontmatter: `name` maps
  * to `title`, `type` is normalized per kind, `timestamp` (and `description`,
- * when the source has none) is derived, `resource` survives only on entities,
+ * when the source has none) is derived, `resource` (its first value, every
+ * value under `resources` when there are several) survives only on entities,
  * and the remaining keys are carried through verbatim. */
 export interface OkfFrontmatter {
   type: string
   title: string
   description?: string
   resource?: string
+  resources?: string[]
   tags?: string[]
   timestamp?: string
   [key: string]: unknown
@@ -89,7 +91,12 @@ function mapFrontmatter(doc: ParsedDoc): OkfFrontmatter {
 
   const description = deriveSummary(kind, fm, body)
   if (description) mapped.description = description
-  if (kind === 'entity' && fm.resource) mapped.resource = fm.resource
+  // OKF's `resource` is one URI: the first value; several also go whole
+  // under the `resources` extension key, so the bundle loses none (#304).
+  if (kind === 'entity' && fm.resource?.length) {
+    mapped.resource = fm.resource[0]
+    if (fm.resource.length > 1) mapped.resources = fm.resource
+  }
   if (fm.tags) mapped.tags = fm.tags
 
   let timestamp: string | undefined

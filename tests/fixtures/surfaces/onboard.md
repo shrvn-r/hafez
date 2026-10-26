@@ -2,13 +2,9 @@ Four renders from `hafez onboard`. Each fenced block is one complete output.
 
 ## `hafez onboard --block` (what the SessionStart hook prints)
 
-The Block exactly as in `block.md`, then one line per entity matching the folder. The folder is the working directory, its git root, and, in a linked worktree, the main repository's root; each is matched exactly, and no directory in between is tried. No match: the Block alone.
+One line per entity matching the folder, never the Block: the instructions file already carries it. The folder is the working directory, its git root, and, in a linked worktree, the main repository's root; each is matched exactly, and no directory in between is tried.
 
 ````
-<!-- hafez:begin a09364b9c576 -->
-(the Block)
-<!-- hafez:end -->
-
 This folder is a Hafez entity. Read it first:
 hafez read auth-refactor (Move session handling from cookies to short-lived tokens)
 ````
@@ -16,13 +12,15 @@ hafez read auth-refactor (Move session handling from cookies to short-lived toke
 Several matches, all printed, active first; an entity with no description gets its slug alone:
 
 ````
-<!-- hafez:begin a09364b9c576 -->
-(the Block)
-<!-- hafez:end -->
-
 This folder matches several Hafez entities. Read the one that fits first:
 hafez read auth-refactor (Move session handling from cookies to short-lived tokens)
 hafez read session-tokens
+````
+
+No match in a git folder that is not the vault's own checkout: one line asking for `--resource .` on the next write to the entity whose work lives there. No match outside git, or in the vault's checkout: nothing.
+
+````
+No Hafez entity names this folder: add `--resource .` when you write to the entity whose work lives here.
 ````
 
 ## `hafez onboard` (status, then the script the agent follows)
@@ -67,7 +65,7 @@ A permission prompt on a hafez command means setup is unfinished. Show the user 
 
 ## 4. Offer the session-start hook (always-on only)
 
-Ask: should the Block be delivered again at the start of every session and after the context is compacted? If yes, show this entry, then add it to ~/.claude/settings.json under hooks.SessionStart:
+Ask: should the start of every session, and every compaction, name the entity the working folder belongs to? If yes, show this entry, then add it to ~/.claude/settings.json under hooks.SessionStart:
 
 {"matcher": "startup|compact", "hooks": [{"type": "command", "command": "hafez onboard --block --harness claude-code"}]}
 
@@ -93,7 +91,7 @@ Step 6 on an empty vault:
 
 An empty vault gives you nothing to load. Ask: "What are you working on right now?" Aim for three to seven pieces of work. For each, draw out one sentence of description, where things stand, and the next step, then write it:
 
-hafez create entity "<name>" --type <project|entity> --parent <slug you read, or its parent> --description "<one sentence>" --brief "<where things stand>" --add-action "<next step>"
+hafez create entity "<name>" --type <project|entity> --parent <slug you read, or its parent> --resource <. if the work lives in this folder> --description "<one sentence>" --brief "<where things stand>" --add-action "<next step>"
 
 Anything vague or someday: `hafez capture "<name>"`. Read a README or notes only if the user points you at them. Do not ask for approval before writing. When done, show them `hafez stats`.
 ````
@@ -138,7 +136,7 @@ Attach ana/vault when you start a session, with push access, and the script regi
 The Block its install line writes is the Block in `block.md` with the repo in its begin marker and one paragraph more, after the first:
 
 ```
-<!-- hafez:begin 629aa0f8ece8 vault-repo=ana/vault -->
+<!-- hafez:begin eee4a9f39fc7 vault-repo=ana/vault -->
 …
 **Cloud session.** If `hafez init` shows no registered vault: attach `ana/vault` to this session (add_repo, push access), clone it to /home/user/vault, run `hafez init --register /home/user/vault`, then continue. Never create a throwaway vault.
 …

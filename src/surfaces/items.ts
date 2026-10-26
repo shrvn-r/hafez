@@ -235,11 +235,12 @@ function renderFooter(input: FooterInput): string {
 
 type ChangePhrase = (f: UpdateFields, r: UpdateResult) => string | undefined
 
-/** A field that is set or, given empty, cleared: `<name> set` / `<name> cleared`. */
-const setOrCleared = (field: keyof UpdateFields, name = field.replace(/_/g, ' ')): ChangePhrase => f => {
+/** A field that is set or, given empty, cleared: `<name> set` / `<name> cleared`.
+ * A field whose value appends says so (`resource added`). */
+const setOrCleared = (field: keyof UpdateFields, name = field.replace(/_/g, ' '), verb = 'set'): ChangePhrase => f => {
   const value = f[field]
   if (value === undefined) return undefined
-  return value === null || value === '' || (Array.isArray(value) && value.length === 0) ? `${name} cleared` : `${name} set`
+  return value === null || value === '' || (Array.isArray(value) && value.length === 0) ? `${name} cleared` : `${name} ${verb}`
 }
 
 /** `<n> action(s) <verb>` over a Next Actions field's one-line and array forms. */
@@ -267,7 +268,8 @@ const CHANGE_PHRASES: Record<keyof UpdateFields, ChangePhrase | null> = {
   parent: f => f.parent !== undefined ? `parent set to ${f.parent}` : undefined,
   status: f => f.status !== undefined ? `status set to ${f.status}` : undefined,
   description: setOrCleared('description'),
-  resource: setOrCleared('resource'),
+  // A resource already held adds nothing, so nothing is named (#302).
+  resource: (f, r) => r.resource_added ? (r.resource_added.length > 0 ? 'resource added' : undefined) : setOrCleared('resource', 'resource', 'added')(f, r),
   domain: setOrCleared('domain'),
   tags: setOrCleared('tags'),
   confidence: f => f.confidence !== undefined ? `confidence set to ${f.confidence}` : undefined,
@@ -364,9 +366,12 @@ const RELATIONS = ['parent', 'related'] as const
 
 /** The entity create line, one text everywhere: the Block, the skill body and
  * the `read` miss. `--parent` carries the placement rule in its placeholder
- * (#226, #230); at a miss with nothing read the agent drops it. */
+ * (#226, #230); at a miss with nothing read the agent drops it. `--resource`
+ * carries its rule the same way (#219): the agent writes `.` when the folder
+ * holds the work, which the binary resolves (#217), and drops the flag
+ * otherwise, so a literal `.` is never copied blind. */
 const createEntityLine = (name: string) =>
-  `hafez create entity "${name}" --type ${oneOf(CREATE_TYPES)} --parent <slug you read, or its parent> --description "<one sentence>" --brief "<where things stand>" --add-action "<next step>"`
+  `hafez create entity "${name}" --type ${oneOf(CREATE_TYPES)} --parent <slug you read, or its parent> --resource <. if the work lives in this folder> --description "<one sentence>" --brief "<where things stand>" --add-action "<next step>"`
 
 const CREATE_LINES = fence([
   createEntityLine('<name>'),
@@ -588,7 +593,7 @@ export const ITEMS = {
     owner: 'block',
     fallback: 'hafezSkillBody',
     invokeOnly: 'via the skill body',
-    evidence: 'fields: kind/name 18, synthesis 16, subtype 15; --parent #230',
+    evidence: 'fields: kind/name 18, synthesis 16, subtype 15; --parent #230; --resource #219',
     text: CREATE_LINES + '\n\nA plan is `--subtype plan` without `--synthesis`. Cannot tell entity from knowledge: `hafez capture "<name>"`.',
     /** The entity create line for one name: what the `read` miss places. */
     render: createEntityLine,
@@ -772,7 +777,7 @@ export const ITEMS = {
     evidence: 'help decision #49',
   },
   folderMatch: {
-    label: 'The working folder is an entity: its read line, after the Block the hook re-delivers',
+    label: 'The working folder is an entity: its read line, the Folder match, never the Block',
     owner: 'onboard',
     invokeOnly: 'not offered',
     evidence: 'L1; onboard decision #58',
@@ -783,6 +788,14 @@ export const ITEMS = {
         : 'This folder matches several Hafez entities. Read the one that fits first:',
       ...matches.map(m => `hafez read ${m.slug}${m.description ? ` (${m.description})` : ''}`),
     ].join('\n'),
+  },
+  noMatchLine: {
+    label: 'A git folder no entity matches: one line asking for `--resource .` on the write to the entity whose work lives here',
+    owner: 'onboard',
+    invokeOnly: 'not offered',
+    evidence: '#217; v2 baseline, the hook read a line in 16 of 54 sessions, no create set resource',
+    // The one line the hook prints in a git folder no entity matches (#307).
+    render: (): string => 'No Hafez entity names this folder: add `--resource .` when you write to the entity whose work lives here.',
   },
   harnessPermissions: {
     label: 'Binary on the harness allowlist; vault path writable',

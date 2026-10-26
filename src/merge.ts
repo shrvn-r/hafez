@@ -2,12 +2,14 @@
 import { parseContent, serializeFile, ARRAY_FIELDS } from './vault.js'
 import { parseSessionLogHeading, splitLogEntries, documentFor, stripActionStamp, type DocSection, type Doc } from './document.js'
 import { APPEND_ONLY_SECTIONS } from './contracts.js'
+import { addResources } from './resource.js'
 
 // Fields that are ISO date strings — latest date wins
 const DATE_FIELDS = ['last-touched', 'last-reinforced', 'created']
 // Fields that are numeric counters — max wins
 const COUNT_FIELDS = ['reinforcement-count', 'staleness-days']
-// Array fields (vault.ARRAY_FIELDS — the same set parsing coerces) union with dedup
+// Array fields (vault.ARRAY_FIELDS — the same set parsing coerces) union with dedup;
+// `resource` by the duplicate rule (resource.ts), so two spellings of one repo are one
 
 export function mergeVaultContent(remote: string, local: string, kind: 'entity' | 'knowledge' | 'session'): string {
   const r = parseContent(remote)
@@ -60,7 +62,7 @@ function mergeFrontmatter(
 
   // Array fields: union
   for (const key of ARRAY_FIELDS) {
-    merged[key] = unionArrays(remote[key], local[key])
+    merged[key] = key === 'resource' ? addResources(asArray(local[key]), asArray(remote[key])) : unionArrays(remote[key], local[key])
     if (merged[key].length === 0) delete merged[key]
   }
   return merged
@@ -69,9 +71,12 @@ function mergeFrontmatter(
 function unionArrays(a: any, b: any): string[] {
   // Local (b) items first: nothing is truncated, but the local side's order is
   // the one the user last saw, so it stays the order they get back.
-  const arrA = Array.isArray(a) ? a : a ? [a] : []
-  const arrB = Array.isArray(b) ? b : b ? [b] : []
-  return [...new Set([...arrB, ...arrA])]
+  return [...new Set([...asArray(b), ...asArray(a)])]
+}
+
+/** An array field's values: a scalar is one value, absent none. */
+function asArray(v: any): string[] {
+  return Array.isArray(v) ? v : v ? [v] : []
 }
 
 // --- Body merge ---

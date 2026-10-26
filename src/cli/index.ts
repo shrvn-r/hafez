@@ -112,7 +112,7 @@ Commands:
   update <slug> [--status]   Update an entity or knowledge note
     --brief "text"           Set/replace Brief (use --brief "" to clear)
     --description "text"     Set one-line description (use --description "" to clear)
-    --resource "uri"         Set canonical resource URI, entities only (use --resource "" to clear)
+    --resource "uri-or-path" Add a place the work lives, entities only (repeats; . is this folder; --resource "" clears every value)
     --add-action "text"      Add a next action (repeats)
     --complete-action handle-or-text  Complete the action with that Handle (as read shows it), else the matching one (repeats)
     --remove-action handle-or-text    Remove the action with that Handle, else the matching one (repeats)
@@ -144,8 +144,9 @@ Commands:
                              Write both skills and, always-on, the Block
                              (--vault-repo: the cloud Block, which attaches that repo)
     --remove [--confirm]     Remove the skills and the Block region
-    --block [--harness <h>]  Print the Block and the entities matching this folder
-                             (the SessionStart hook; prints nothing on any failure)
+    --block [--harness <h>]  Print the entities matching this folder
+                             (the SessionStart hook; no match in a git folder that is not the
+                             vault's checkout asks for --resource .; else nothing, exit 0)
     --cloud --vault-repo <o/r>
                              Print the setup script for Claude Code cloud sessions
   upgrade                    Check whether hafez is outdated and print the update steps

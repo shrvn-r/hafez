@@ -4,13 +4,14 @@ import { resolve } from 'path'
 import { helpIfAsked, parseArgs, splitList, str, MisuseError, RenderedError, UnknownFlagError, UsageError, type FlagSpec, type FlagValue } from './args.js'
 import type { Hafez, ReadDepth, UpdateFields, UpdateResult, EntityType, QueryFilter, ConfidenceLevel, KnowledgeSubtype, CreateEntityFields, CreateKnowledgeFields, BatchOperation, KnowledgeQueryOpts, QueryResult, KnowledgeQueryResult, SessionQueryResult, SearchKind, UnifiedResult, GraphLayer } from '../types.js'
 import { HafezError } from '../types.js'
-import { BatchOperationSchema, normalizeAliases, opErrorLine, batchInvalidHeader } from '../batch-ops.js'
+import { BatchOperationSchema, normalizeAliases, opErrorLine, batchInvalidHeader, clearsBesideValue, RESOURCE_CLEAR_REASON } from '../batch-ops.js'
 import { formatBatchError } from './batch-errors.js'
 import { parseDigestInput, digest } from '../digest.js'
 import { detectAgent } from '../harness.js'
 import { resemblances } from '../near-match.js'
 import { actionAge, staleHandles, stalenessDaysOf } from '../stale.js'
 import { slugify } from '../vault.js'
+import { resolveDot } from '../resource.js'
 import { GRAPH_LAYERS } from '../contracts.js'
 import { ITEMS, type MisuseRetry, type NearMatchNote } from '../surfaces/items.js'
 import { footerFor, pointersFor, readJsonOf } from '../read-json.js'
@@ -22,6 +23,8 @@ export interface CommandOpts {
   /** Resolved vault path — for handlers that read the vault directly
    * (export) rather than through the Hafez instance. */
   vaultPath?: string
+  /** The folder `--resource .` names (#306); `process.cwd()` when unset. */
+  cwd?: string
 }
 
 function jsonOut(data: unknown): string {
@@ -209,7 +212,7 @@ export async function cmdQuery(os: Hafez, args: string[], opts: CommandOpts = {}
   const queryOpts = { filter, type, parent, domain, ...timeOpts, tags, ...sortOpts }
 
   // --kind knowledge: query knowledge only. The time window applies here too —
-  // knowledge rows carry created (and last-touched for the plan subtype).
+  // knowledge rows carry created (and last-touched once updated).
   if (branch === 'knowledge') {
     const kOpts: KnowledgeQueryOpts = { domain: domain ?? undefined, confidence, subtype, ...timeOpts, tags, ...sortOpts }
     const result = await os.query_knowledge(kOpts)
@@ -303,12 +306,29 @@ function flagFields(
   return fields
 }
 
+/** Repeat flags whose every value goes to the one field, a list when
+ * repeated (never the `<field>s` array form): create and update alike.
+ * flagFields skips them; each command maps them itself. */
+export const ONE_FIELD_REPEATS = new Set(['resource'])
+
+/** `--resource`'s values as the `resource` field, appended by the library.
+ * `""` alone is the clear signal (null: update clears, create writes none);
+ * `""` beside a value is the Op Spec's misuse, caught here as a usage error.
+ * Each `.` is the command's folder, resolved here: the library rejects a
+ * literal `.` (#306). */
+function resourceField(given: string[], cwd: string): string | string[] | null {
+  if (clearsBesideValue(given)) throw new UsageError(`--resource "": ${RESOURCE_CLEAR_REASON}`)
+  const values = given.map(v => v === '.' ? resolveDot(cwd) : v)
+  if (values.length > 1) return values
+  return values[0] === '' ? null : values[0]
+}
+
 // --status is knowledge/plan only, and --purpose needs --type project: a field
 // whose section the chosen template lacks is rejected, never silently dropped.
 const CREATE_USAGE = 'Usage: hafez create <entity|knowledge> <name> [options]\n  entity:    --type <capture|entity|project> [--purpose text (project only)] [--brief text] [--add-action text (repeats)] …\n  knowledge: [--subtype <insight|plan>] [--status <active|done> (plan only)] [--synthesis text (insight only)] [--confidence <observation|pattern|principle>] [--new (write despite a near-match)] …'
 /** Exported so tests can assert the flag × kind matrix is exhaustive. */
 export const CREATE_FLAGS: FlagSpec = {
-  type: 'string', purpose: 'string', description: 'string', resource: 'string',
+  type: 'string', purpose: 'string', description: 'string', resource: 'repeat',
   domain: 'string', parent: 'string', related: 'string', tags: 'string',
   brief: 'string', 'add-action': 'repeat',
   subtype: 'string', synthesis: 'string', insight: 'string', confidence: 'string',
@@ -366,7 +386,10 @@ export async function cmdCreate(os: Hafez, args: string[], opts: CommandOpts = {
   // Kind-agnostic on purpose: the per-kind hand-filter this replaced
   // discarded whatever its branch didn't name (--brief on knowledge,
   // --subtype on entity) and still exited 0 with the value nowhere on disk.
-  const fields = flagFields(CREATE_FLAGS, flags, { skip: new Set(['new']) })
+  const fields = flagFields(CREATE_FLAGS, flags, { skip: new Set(['new', ...ONE_FIELD_REPEATS]) })
+  // `""` reaches the library as given: no value on an entity, a field a
+  // knowledge note rejects.
+  if (Array.isArray(flags.resource)) fields.resource = resourceField(flags.resource, opts.cwd ?? process.cwd()) ?? ''
 
   if (kind === 'entity') {
     // The only per-kind rule the CLI still owns: --type is required, and a
@@ -405,13 +428,13 @@ export async function cmdCreate(os: Hafez, args: string[], opts: CommandOpts = {
   throw new UsageError(`Unknown kind: ${kind}. Use entity or knowledge.`)
 }
 
-const UPDATE_USAGE = 'Usage: hafez update <slug> [--brief text] [--description text] [--resource uri] [--add-action text (repeats)] [--complete-action handle-or-text (repeats)] [--remove-action handle-or-text (repeats)] [--clear-actions] [--status <active|paused|done>] [--parent slug] [--log "<progress|decision|blocker|research>: summary" [--body text]]'
+const UPDATE_USAGE = 'Usage: hafez update <slug> [--brief text] [--description text] [--resource uri-or-path (repeats; "" clears)] [--add-action text (repeats)] [--complete-action handle-or-text (repeats)] [--remove-action handle-or-text (repeats)] [--clear-actions] [--status <active|paused|done>] [--parent slug] [--log "<progress|decision|blocker|research>: summary" [--body text]]'
 /** Exported so tests can assert the table covers the update schema. */
 export const UPDATE_FLAGS: FlagSpec = {
   status: 'string', 'current-state': 'string', brief: 'string',
   'add-action': 'repeat', 'complete-action': 'repeat', 'remove-action': 'repeat',
   'clear-actions': 'boolean', parent: 'string',
-  description: 'string', resource: 'string', domain: 'string', confidence: 'string',
+  description: 'string', resource: 'repeat', domain: 'string', confidence: 'string',
   tags: 'string', related: 'string', insight: 'string', synthesis: 'string',
   'add-evidence': 'string', 'add-source': 'string', agent: 'string',
   // Composed, not mapped: --log "type: summary" plus --body (and --agent, when
@@ -448,7 +471,7 @@ export async function cmdUpdate(os: Hafez, args: string[], opts: CommandOpts = {
   let fields: UpdateFields
   let result: UpdateResult
   try {
-    ({ slug, fields } = parseUpdate(args))
+    ({ slug, fields } = parseUpdate(args, opts.cwd ?? process.cwd()))
     result = await os.update(slug, fields)
   } catch (err) {
     throw await updateFailure(os, slug, err, opts)
@@ -460,7 +483,7 @@ export async function cmdUpdate(os: Hafez, args: string[], opts: CommandOpts = {
 }
 
 /** The update's argv as its slug and fields: the Write Line grammar. */
-function parseUpdate(args: string[]): { slug: string; fields: UpdateFields } {
+function parseUpdate(args: string[], cwd: string): { slug: string; fields: UpdateFields } {
   const { flags, positionals } = parseArgs(args, UPDATE_FLAGS, UPDATE_USAGE)
   const slug = positionals[0]
   if (!slug) throw new UsageError(UPDATE_USAGE)
@@ -471,7 +494,8 @@ function parseUpdate(args: string[]): { slug: string; fields: UpdateFields } {
 
   // --insight is the declared alias; the Op Spec normalizes it (and drops it
   // when --synthesis is also given).
-  const fields = flagFields(UPDATE_FLAGS, flags, { skip: UPDATE_SPECIAL_FLAGS, clearable: UPDATE_CLEARABLE_FLAGS })
+  const fields = flagFields(UPDATE_FLAGS, flags, { skip: new Set([...UPDATE_SPECIAL_FLAGS, ...ONE_FIELD_REPEATS]), clearable: UPDATE_CLEARABLE_FLAGS })
+  if (Array.isArray(flags.resource)) fields.resource = resourceField(flags.resource, cwd)
 
   // The one genuinely CLI-owned convenience: session_log is a nested object,
   // so the flag pair composes it rather than naming a field. Without --log,
@@ -810,6 +834,35 @@ function readStdin(): Promise<string> {
   })
 }
 
+/** Each `.` in a create entity or update op's `resource` (a string or in a
+ * list) resolved against `cwd`, before the shape check, which rejects a
+ * literal `.` (#306): the payload with them resolved, and one line per `.`
+ * for `--dry-run` to show. A payload that is not a JSON array is returned as
+ * given, for parseBatchInput to report. */
+function resolveBatchDots(input: string, cwd: string): { input: string; resolved: string[] } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(input)
+  } catch {
+    return { input, resolved: [] }
+  }
+  if (!Array.isArray(parsed)) return { input, resolved: [] }
+  const resolved: string[] = []
+  parsed.forEach((op, i) => {
+    const fields = op?.fields
+    if (!(op?.op === 'update' || (op?.op === 'create' && op.kind === 'entity')) || !fields || typeof fields !== 'object') return
+    const dot = (v: unknown): unknown => {
+      if (v !== '.') return v
+      const value = resolveDot(cwd)
+      resolved.push(`op[${i}] resource . → ${value}`)
+      return value
+    }
+    if (Array.isArray(fields.resource)) fields.resource = fields.resource.map(dot)
+    else fields.resource = dot(fields.resource)
+  })
+  return resolved.length > 0 ? { input: JSON.stringify(parsed), resolved } : { input, resolved }
+}
+
 const BATCH_USAGE = "Usage: hafez batch [--dry-run] [--data '<payload>' | --file payload.json]  (or pipe JSON to stdin)"
 const BATCH_FLAGS: FlagSpec = { 'dry-run': 'boolean', data: 'string', file: 'string' }
 
@@ -825,9 +878,10 @@ export async function cmdBatch(os: Hafez, args: string[], opts: CommandOpts = {}
   if (!input.trim()) {
     throw new HafezError('VALIDATION_FAILED', 'No input received. Pipe JSON array to stdin (echo \'[...]\' | hafez batch) or pass --data \'[...]\' or --file payload.json')
   }
+  const { input: payload, resolved } = resolveBatchDots(input, opts.cwd ?? process.cwd())
   let operations: BatchOperation[]
   try {
-    operations = parseBatchInput(input)
+    operations = parseBatchInput(payload)
   } catch (err) {
     throw err instanceof HafezError ? new MisuseError(err, placeIn('batchMisuse', 'batchShape')) : err
   }
@@ -838,7 +892,7 @@ export async function cmdBatch(os: Hafez, args: string[], opts: CommandOpts = {}
     // Same validate phase as apply — dry-run can never green-light a payload
     // apply rejects. Reports derived slugs so agents can predict create slugs.
     const report = await os.validateBatch(operations)
-    if (opts.json) return jsonOut(report)
+    if (opts.json) return jsonOut(resolved.length > 0 ? { ...report, resolved } : report)
     if (!report.valid) {
       const invalidCount = report.operations.filter(o => o.errors.length > 0).length
       const lines = report.operations.flatMap(o => o.errors.map(e => opErrorLine(o.index, o.op, o.slug, e)))
@@ -859,6 +913,7 @@ export async function cmdBatch(os: Hafez, args: string[], opts: CommandOpts = {}
     for (const o of report.operations) {
       if (o.warning) out.push(`Warning: op[${o.index}] ${o.warning}`)
     }
+    if (resolved.length > 0) out.push('Resolved:', ...resolved.map(r => `  ${r}`))
     return [...out, ...nearMatches].join('\n')
   }
   const results = await os.batch(operations)

@@ -181,10 +181,14 @@ export function renderBlock(vaultRepo?: string): string {
   return `<!-- hafez:begin ${contentHash(inner)}${repo} -->\n${inner}<!-- hafez:end -->\n`
 }
 
-/** `onboard --block`, what the SessionStart hook prints: the Block, then the
- * read line for each entity matching the folder. */
-export function renderBlockHook(matches: FolderMatch[]): string {
-  return matches.length === 0 ? renderBlock() : `${renderBlock()}\n${ITEMS.folderMatch.render(matches)}\n`
+/** `onboard --block`, what the SessionStart hook prints: the read line for
+ * each entity matching the folder; with none, in a git folder other than the
+ * vault's checkout (`unmatchedGitFolder`), the no-match line; else nothing.
+ * Never the Block, which the instructions file already carries, compaction
+ * included (#234). */
+export function renderBlockHook(matches: FolderMatch[], unmatchedGitFolder: boolean): string {
+  if (matches.length > 0) return `${ITEMS.folderMatch.render(matches)}\n`
+  return unmatchedGitFolder ? `${ITEMS.noMatchLine.render()}\n` : ''
 }
 
 export const renderHafezSkill = (): string => skillFile('hafez', 'hafezSkillDescription', 'hafezSkillBody')

@@ -25,7 +25,7 @@ export function formatEntityHeader(fm: Record<string, any>, body: string, parent
 
   if (fm.related?.length) lines.push(`related: ${fm.related.join(', ')}`)
   if (fm.tags?.length) lines.push(`tags: ${fm.tags.join(', ')}`)
-  if (fm.resource) lines.push(`resource: ${fm.resource}`)
+  if (fm.resource?.length) lines.push(`resource: ${fm.resource.join(' · ')}`)
   lines.push(...pointers)
 
   lines.push('')

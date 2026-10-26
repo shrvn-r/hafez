@@ -1,4 +1,4 @@
-<!-- hafez:begin a09364b9c576 -->
+<!-- hafez:begin ba7b2e9e434d -->
 ## Hafez
 
 Hafez is this user's vault: what they are working on (entities) and what they have learned (knowledge). You reach it only through the `hafez` command.
@@ -15,7 +15,7 @@ Hafez is this user's vault: what they are working on (entities) and what they ha
 - You are weighing whether something is worth writing: write it, as knowledge with `--confidence observation`.
 
 ```
-hafez create entity "<name>" --type <project|entity> --parent <slug you read, or its parent> --description "<one sentence>" --brief "<where things stand>" --add-action "<next step>"
+hafez create entity "<name>" --type <project|entity> --parent <slug you read, or its parent> --resource <. if the work lives in this folder> --description "<one sentence>" --brief "<where things stand>" --add-action "<next step>"
 hafez create knowledge "<name>" --synthesis "<the insight>" --confidence <observation|pattern|principle> --related <slug>
 ```
 

@@ -74,7 +74,8 @@ describe('update success: one line saying what changed', () => {
     [['--status', 'paused'], 'log added, status set to paused'],
     [['--description', 'One sentence'], 'log added, description set'],
     [['--description', ''], 'log added, description cleared'],
-    [['--resource', 'https://example.com'], 'log added, resource set'],
+    [['--resource', 'https://example.com'], 'log added, resource added'],
+    [['--resource', 'https://a.example.com', '--resource', 'https://b.example.com'], 'log added, resource added'],
     [['--resource', ''], 'log added, resource cleared'],
     [['--domain', 'eng,ops'], 'log added, domain set'],
     [['--tags', 'a,b'], 'log added, tags set'],
@@ -98,6 +99,16 @@ describe('update success: one line saying what changed', () => {
     const slug = await entity(['One', 'Two', 'Three', 'Four', 'Keep'])
     expect(await cmdUpdate(os, [slug, '--complete-action', 'One', '--complete-action', 'Two', '--remove-action', 'Three', '--remove-action', 'Four']))
       .toBe(`Updated ${slug}: 2 actions ticked, 2 actions removed.`)
+  })
+
+  it('a resource already held (another spelling of it) is not named', async () => {
+    const slug = await entity()
+    await cmdUpdate(os, [slug, '--resource', 'https://github.com/org/held'])
+    expect(await cmdUpdate(os, [slug, '--resource', 'git@github.com:Org/Held.git'])).toBe(`Updated ${slug}.`)
+    expect(await cmdUpdate(os, [slug, '--resource', 'https://github.com/org/held', '--status', 'paused']))
+      .toBe(`Updated ${slug}: log added, status set to paused.`)
+    expect(await cmdUpdate(os, [slug, '--resource', 'https://github.com/org/held', '--resource', '/srv/held']))
+      .toBe(`Updated ${slug}: log added, resource added.`)
   })
 
   const KNOWLEDGE_CASES: Array<[string[], string]> = [

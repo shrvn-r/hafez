@@ -11,7 +11,7 @@ import { mkdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createMemoryJournal } from './helpers/memory-journal.js'
-import { cmdCreate, cmdUpdate, UPDATE_FLAGS, UPDATE_SPECIAL_FLAGS, UPDATE_FIELDS_WITHOUT_FLAGS } from '../src/cli/commands.js'
+import { cmdCreate, cmdUpdate, UPDATE_FLAGS, UPDATE_SPECIAL_FLAGS, UPDATE_FIELDS_WITHOUT_FLAGS, ONE_FIELD_REPEATS } from '../src/cli/commands.js'
 import { cmdSchema } from '../src/cli/commands-schema.js'
 import { exitCodeFor } from '../src/cli/index.js'
 import { UpdateFieldsSchema } from '../src/batch-ops.js'
@@ -67,7 +67,7 @@ const FLAG_CASES: FlagCase[] = [
   { flag: 'remove-action', value: 'Ship', applies: ['entity'], assert: r => expect(r.body).not.toContain(SEEDED_ACTION) },
   { flag: 'clear-actions', applies: ['entity'], assert: r => expect(r.body).not.toContain('- [ ]') },
   { flag: 'description', value: 'One-line summary', applies: ['entity', 'knowledge'], assert: r => expect(r.frontmatter.description).toBe('One-line summary') },
-  { flag: 'resource', value: 'https://example.com/repo', applies: ['entity'], assert: r => expect(r.frontmatter.resource).toBe('https://example.com/repo') },
+  { flag: 'resource', value: 'https://example.com/repo', applies: ['entity'], assert: r => expect(r.frontmatter.resource).toEqual(['https://example.com/repo']) },
   { flag: 'domain', value: 'engineering', applies: ['entity', 'knowledge'], assert: r => expect(r.frontmatter.domain).toContain('engineering') },
   { flag: 'confidence', value: 'pattern', applies: ['knowledge'], assert: r => expect(r.frontmatter.confidence).toBe('pattern') },
   { flag: 'tags', value: 'mytag', applies: ['entity', 'knowledge'], assert: r => expect(r.frontmatter.tags).toContain('mytag') },
@@ -154,10 +154,11 @@ describe('the flag table tracks the update shape', () => {
   const schemaKeys = Object.keys(UpdateFieldsSchema.shape)
   const flagFields = Object.keys(UPDATE_FLAGS)
     .filter(f => !UPDATE_SPECIAL_FLAGS.has(f))
-    // A repeatable flag also reaches the array form of its field (`add_actions`).
+    // A repeatable flag also reaches the array form of its field (`add_actions`),
+    // except a one-field repeat (--resource), whose list is the field itself.
     .flatMap(f => {
       const field = f.replace(/-/g, '_')
-      return UPDATE_FLAGS[f] === 'repeat' ? [field, `${field}s`] : [field]
+      return UPDATE_FLAGS[f] === 'repeat' && !ONE_FIELD_REPEATS.has(f) ? [field, `${field}s`] : [field]
     })
 
   it('covers every update-schema field except the declared exclusions', () => {
@@ -199,6 +200,33 @@ describe('empty-string policy — clear on the nullable fields, reject elsewhere
     await cmdUpdate(os, [slug, '--resource', ''])
     expect(((await os.read(slug)) as unknown as Read).frontmatter.resource).toBeUndefined()
   })
+
+  it('--resource appends to the values held, a duplicate spelling skipped (#305)', async () => {
+    const slug = await seedTarget('entity', 'Ux append resource')
+    await cmdUpdate(os, [slug, '--resource', 'https://github.com/org/repo'])
+    await cmdUpdate(os, [slug, '--resource', 'git@github.com:org/repo.git', '--resource', 'https://docs.example.com'])
+    expect(((await os.read(slug)) as unknown as Read).frontmatter.resource)
+      .toEqual(['https://github.com/org/repo', 'https://docs.example.com'])
+  })
+
+  it('--resource "" clears every value (#305)', async () => {
+    const slug = await seedTarget('entity', 'Ux clear many resource')
+    await cmdUpdate(os, [slug, '--resource', 'https://a.example.com', '--resource', 'https://b.example.com'])
+    await cmdUpdate(os, [slug, '--resource', ''])
+    expect(((await os.read(slug)) as unknown as Read).frontmatter.resource).toBeUndefined()
+  })
+
+  for (const argv of [['--resource', '', '--resource', 'https://a.example.com'], ['--resource', 'https://a.example.com', '--resource', '']]) {
+    it(`${argv.join(' ')} is a usage error, nothing written (#305)`, async () => {
+      const slug = await seedTarget('entity', `Ux mixed resource ${argv[1] === '' ? 'first' : 'last'}`)
+      await cmdUpdate(os, [slug, '--resource', 'https://held.example.com'])
+      const before = await os.read(slug, 'full') as unknown as Read
+      const err = await cmdUpdate(os, [slug, ...argv]).then(() => null, e => e)
+      expect(exitCodeFor(err)).toBe(2)
+      expect(err.message).toContain('--resource ""')
+      expect(await os.read(slug, 'full')).toEqual(before)
+    })
+  }
 
   it('--status "" is rejected by name instead of silently no-opping', async () => {
     const slug = await seedTarget('entity', 'Ux empty status')

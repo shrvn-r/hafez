@@ -1,19 +1,21 @@
 // tests/onboard-block.test.ts
 //
 // The temp-home seam for `onboard --block`, the SessionStart hook's render:
-// the Block, then one line per entity whose `resource` or slug matches the
-// folder. Three folders are tried, each exactly: the working directory, its
-// git root, and in a linked worktree the main repository's root. Any failure
-// prints nothing. The two renders in tests/fixtures/surfaces/onboard.md are checked
-// whole in tests/surfaces.test.ts.
+// one line per entity whose `resource` or slug matches the folder, and never
+// the Block, which the instructions file already carries (#234). Three
+// folders are tried, each exactly: the working directory, its git root, and
+// in a linked worktree the main repository's root. No match in a git folder
+// that is not the vault's checkout prints the no-match line; any other miss,
+// and any failure, prints nothing. The three renders in
+// tests/fixtures/surfaces/onboard.md are checked whole in tests/surfaces.test.ts.
 
 import { describe, it, expect, afterEach } from 'vitest'
 import { execFileSync, spawnSync } from 'child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, realpathSync, symlinkSync } from 'fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, realpathSync, symlinkSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { cmdOnboard } from '../src/cli/onboard.js'
-import { renderBlock } from '../src/surfaces/surfaces.js'
+import { ITEMS } from '../src/surfaces/items.js'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -30,7 +32,7 @@ interface Seed {
   slug: string
   status?: 'active' | 'paused' | 'done'
   description?: string
-  resource?: string
+  resource?: string | string[]
 }
 
 /** A home whose config names a vault holding `entities`. */
@@ -48,7 +50,7 @@ function setup(entities: Seed[]): { home: string; vault: string } {
       'created: 2026-10-01',
       'last-touched: 2026-10-01',
       ...(e.description ? [`description: ${e.description}`] : []),
-      ...(e.resource ? [`resource: '${e.resource}'`] : []),
+      ...(Array.isArray(e.resource) ? ['resource:', ...e.resource.map(r => `  - '${r}'`)] : e.resource ? [`resource: '${e.resource}'`] : []),
       '---',
       '',
       '## Brief',
@@ -77,29 +79,42 @@ function repo(parent: string, name: string): string {
 const block = (home: string, cwd: string, ...args: string[]) =>
   cmdOnboard(['--block', ...args], { home, env: {}, cwd })
 
-const BLOCK = renderBlock()
+/** The built CLI, run from `home` with `home` as the user's home. */
+const cli = (home: string, ...args: string[]) =>
+  spawnSync('node', [join(process.cwd(), 'dist', 'cli.js'), ...args], {
+    cwd: home,
+    env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home },
+    encoding: 'utf-8',
+  })
+
 const AUTH = { slug: 'auth-refactor', description: 'Move session handling from cookies to short-lived tokens' }
 const LINE = 'hafez read auth-refactor (Move session handling from cookies to short-lived tokens)'
+const NO_MATCH = `${ITEMS.noMatchLine.render()}\n`
 
 describe('onboard --block: the render', () => {
-  it('starts with the Block exactly as block.md', async () => {
+  it('prints the read line alone, never the Block', async () => {
     const { home } = setup([AUTH])
     const cwd = join(tempDir('work-'), 'auth-refactor')
     mkdirSync(cwd)
-    const out = await block(home, cwd)
-    expect(out!.startsWith(readFileSync('tests/fixtures/surfaces/block.md', 'utf-8'))).toBe(true)
+    expect(await block(home, cwd)).toBe(`This folder is a Hafez entity. Read it first:\n${LINE}\n`)
   })
 
-  it('prints the Block alone when nothing matches', async () => {
+  it('prints nothing when nothing matches outside git', async () => {
     const { home } = setup([AUTH])
-    expect(await block(home, tempDir('elsewhere-'))).toBe(BLOCK)
+    expect(await block(home, tempDir('elsewhere-'))).toBeNull()
+  })
+
+  it('the built CLI prints nothing and exits 0 when nothing matches', () => {
+    const { home } = setup([AUTH])
+    const r = cli(home, 'onboard', '--block')
+    expect({ stdout: r.stdout, status: r.status }).toEqual({ stdout: '', status: 0 })
   })
 
   it('prints the slug alone when the entity has no description', async () => {
     const { home } = setup([{ slug: 'auth-refactor' }])
     const cwd = join(tempDir('work-'), 'auth-refactor')
     mkdirSync(cwd)
-    expect((await block(home, cwd))!.endsWith('\nhafez read auth-refactor\n')).toBe(true)
+    expect(await block(home, cwd)).toBe('This folder is a Hafez entity. Read it first:\nhafez read auth-refactor\n')
   })
 
   it('looks for the config under XDG_CONFIG_HOME over ~/.config when it is set', async () => {
@@ -110,7 +125,7 @@ describe('onboard --block: the render', () => {
 
   it('accepts --harness', async () => {
     const { home } = setup([])
-    expect(await block(home, tempDir('elsewhere-'), '--harness', 'claude-code')).toBe(BLOCK)
+    expect(await block(home, tempDir('elsewhere-'), '--harness', 'claude-code')).toBeNull()
   })
 })
 
@@ -185,7 +200,7 @@ describe('onboard --block: the three folders', () => {
     const { home } = setup([AUTH])
     const cwd = join(tempDir('work-'), 'auth-refactor', 'notes')
     mkdirSync(cwd, { recursive: true })
-    expect(await block(home, cwd)).toBe(BLOCK)
+    expect(await block(home, cwd)).toBeNull()
   })
 
   it('does not match a directory between the working directory and the git root', async () => {
@@ -193,13 +208,44 @@ describe('onboard --block: the three folders', () => {
     const root = repo(tempDir('work-'), 'checkout')
     const cwd = join(root, 'auth-refactor', 'src')
     mkdirSync(cwd, { recursive: true })
-    expect(await block(home, cwd)).toBe(BLOCK)
+    expect(await block(home, cwd)).toBe(NO_MATCH)
   })
 
   it('does not match a directory above the git root', async () => {
     const { home } = setup([AUTH])
     const root = repo(join(tempDir('work-'), 'auth-refactor'), 'checkout')
-    expect(await block(home, root)).toBe(BLOCK)
+    expect(await block(home, root)).toBe(NO_MATCH)
+  })
+})
+
+describe('onboard --block: the no-match line', () => {
+  it('prints the no-match line in a git folder no entity matches', async () => {
+    const { home } = setup([AUTH])
+    const root = repo(tempDir('work-'), 'checkout')
+    expect(await block(home, root)).toBe(NO_MATCH)
+  })
+
+  it('prints only the read line in a git folder an entity matches', async () => {
+    const { home } = setup([AUTH])
+    const root = repo(tempDir('work-'), 'auth-refactor')
+    expect(await block(home, root)).toBe(`This folder is a Hafez entity. Read it first:\n${LINE}\n`)
+  })
+
+  it('prints nothing in the vault\'s own checkout, from its root or a subfolder', async () => {
+    const { home, vault } = setup([AUTH])
+    git(vault, 'init', '-q')
+    expect(await block(home, vault)).toBeNull()
+    expect(await block(home, join(vault, 'entities'))).toBeNull()
+  })
+
+  it('prints nothing in a linked worktree of the vault\'s repository', async () => {
+    const { home, vault } = setup([AUTH])
+    git(vault, 'init', '-q')
+    git(vault, 'add', '-A')
+    git(vault, 'commit', '-q', '-m', 'init')
+    const wt = join(tempDir('work-'), 'vault-wt')
+    git(vault, 'worktree', 'add', '-q', wt)
+    expect(await block(home, wt)).toBeNull()
   })
 })
 
@@ -214,14 +260,22 @@ describe('onboard --block: several matches', () => {
       { slug: 'unrelated', status: 'active' },
     ])
     const out = (await block(home, cwd))!
-    expect(out.slice(BLOCK.length)).toBe([
-      '',
+    expect(out).toBe([
       'This folder matches several Hafez entities. Read the one that fits first:',
       'hafez read auth-refactor',
       'hafez read auth-b',
       'hafez read auth-a',
       '',
     ].join('\n'))
+  })
+})
+
+describe('onboard --block: several values (#304)', () => {
+  it('prints the read line when any one of several values matches', async () => {
+    const root = repo(tempDir('work-'), 'checkout')
+    git(root, 'remote', 'add', 'origin', 'git@github.com:acme/auth-service-dev.git')
+    const { home } = setup([{ ...AUTH, resource: ['https://github.com/acme/auth-service', '/nowhere/auth', 'https://github.com/acme/auth-service-dev'] }])
+    expect(await block(home, root)).toContain(LINE)
   })
 })
 
@@ -264,13 +318,6 @@ describe('onboard --block: any failure prints nothing', () => {
 
   // A hand-edited hook line, or one an older install wrote with a flag a newer
   // binary dropped, must not block the session either (#132).
-  const cli = (home: string, ...args: string[]) =>
-    spawnSync('node', [join(process.cwd(), 'dist', 'cli.js'), ...args], {
-      cwd: home,
-      env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home },
-      encoding: 'utf-8',
-    })
-
   it.each([
     ['an unknown harness', ['onboard', '--block', '--harness', 'nope']],
     ['an unknown flag', ['onboard', '--block', '--bogus']],

@@ -51,6 +51,25 @@ const nonEmptyText = z.string().trim().min(1, 'must contain text — an empty va
 export const splitCommaList = (value: string): string[] => value.split(',').map(s => s.trim()).filter(Boolean)
 const stringList = z.preprocess(v => typeof v === 'string' ? splitCommaList(v) : v, z.array(z.string()))
 
+// `resource` takes one value or a list (#304), a string being a one-value
+// list. `''` clears (update) or adds nothing (create) on its own; beside a
+// value it is ambiguous, so rejected. A literal `.` names the CLI's working
+// folder, which the library cannot see.
+const RESOURCE_DOT_REASON = '`.` is resolved by the CLI; pass the folder\'s remote URL or path'
+export const RESOURCE_CLEAR_REASON = 'an empty value clears every value and cannot stand beside another'
+/** `''` beside a value: whether the clear or the add won would be ambiguous. */
+export const clearsBesideValue = (list: string[]): boolean => list.length > 1 && list.includes('')
+const resourceValues = z.preprocess(v => typeof v === 'string' ? [v] : v, z.array(z.string()).superRefine((list, ctx) => {
+  if (list.includes('.')) ctx.addIssue({ code: 'custom', message: RESOURCE_DOT_REASON })
+  if (clearsBesideValue(list)) ctx.addIssue({ code: 'custom', message: RESOURCE_CLEAR_REASON })
+}))
+
+/** A valid `resource` field's values: one value or a list; null, `''` and
+ * `[]` are none. */
+export function resourceList(value: string | string[] | null | undefined): string[] {
+  return (typeof value === 'string' ? [value] : value ?? []).filter(v => v !== '')
+}
+
 export const SessionLogSchema = z.object({
   type: z.enum([...SESSION_LOG_TYPES] as [string, ...string[]]),
   summary: z.string(),
@@ -74,7 +93,7 @@ export const UpdateFieldsSchema = z.object({
   parent: z.string().optional(),     // entity-only; the slug must exist, no cycle
   // Knowledge metadata
   description: z.string().nullable().optional(),
-  resource: z.string().nullable().optional(),
+  resource: resourceValues.nullable().optional(),
   domain: stringList.optional(),
   confidence: z.enum([...CONFIDENCE_LEVELS] as [string, ...string[]]).optional(),
   tags: stringList.optional(),
@@ -89,7 +108,7 @@ export const CreateEntityFieldsSchema = z.object({
   type: z.enum([...ENTITY_TYPES] as [string, ...string[]]),
   purpose: nonEmptyText.optional(),
   description: z.string().optional(),
-  resource: z.string().optional(),
+  resource: resourceValues.optional(),
   domain: stringList.optional(),
   parent: z.string().optional(),
   related: stringList.optional(),

@@ -70,7 +70,7 @@ export function cmdOnboard(args: string[], ctx: OnboardCtx = {}): string | Promi
     return ITEMS.cloudSetup.render({ vaultRepo })
   }
   if (flags.block) {
-    if (flags.install || flags.remove || mode !== undefined || confirm) fail('--block takes only --harness: it prints the Block and writes nothing')
+    if (flags.install || flags.remove || mode !== undefined || confirm) fail('--block takes only --harness: it prints the folder match and writes nothing')
     if (harnessFlag !== undefined && !isHarness(harnessFlag)) fail(`Unknown harness: ${harnessFlag}`)
     return blockHook({ home, env, cwd, vaultFlag })
   }
@@ -251,7 +251,7 @@ export function renderOnboard({ home, harness, vault }: { home: string; harness:
   if (!config.hook && mode !== 'invoke-only') {
     steps.push({
       title: 'Offer the session-start hook (always-on only)',
-      body: 'Ask: should the Block be delivered again at the start of every session and after the context is compacted? '
+      body: 'Ask: should the start of every session, and every compaction, name the entity the working folder belongs to? '
         + `If yes, show this entry, then add it to ~/${ONBOARD_HARNESSES[harness].hooks} under hooks.SessionStart:\n\n${hookEntry(harness)}`
         // Live run (#101): Codex asks once whether to trust a new hook.
         + (harness === 'codex' ? '\n\nTell the user Codex will ask once, at the next session start, whether to trust this hook: the answer is yes.' : ''),

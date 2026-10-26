@@ -10,6 +10,7 @@
 // `scripts/render-surfaces.ts` writes the files; tests/surfaces.test.ts
 // fails on any difference.
 
+import { execFileSync } from 'child_process'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -415,16 +416,11 @@ async function renderCreateKnowledgeOutput(os: Hafez, root: string): Promise<str
   ].join('\n')
 }
 
-/** The Block's text between its marker lines, which the `onboard` renders
- * show as `(the Block)`: it is in block.md in full. */
-export const BLOCK_PLACEHOLDER = '(the Block)\n'
-export const blockInner = (): string => renderBlock().split('\n').slice(1, -2).join('\n') + '\n'
-
 /** The vault path the bare render shows in place of the fixture's. */
 const SHOWN_VAULT = '/home/ana/vault'
 
 /** The four `onboard` renders: the hook's `--block` form on a folder one
- * entity matches and on one two match; the bare form on a home with nothing
+ * entity matches, on one two match and on a git folder none matches; the bare form on a home with nothing
  * installed and Codex found; step 6 on an empty vault; the teaching lines;
  * `--cloud`, with the paragraph the cloud Block adds. */
 async function renderOnboard(root: string, vault: string, severalCwd: string): Promise<string> {
@@ -435,6 +431,9 @@ async function renderOnboard(root: string, vault: string, severalCwd: string): P
   const oneCwd = join(root, 'work', 'auth-refactor')
   mkdirSync(oneCwd, { recursive: true })
   mkdirSync(severalCwd, { recursive: true })
+  const gitCwd = join(root, 'work', 'invoice-exporter')
+  mkdirSync(gitCwd)
+  execFileSync('git', ['init', '-q'], { cwd: gitCwd, stdio: 'pipe' })
   const empty = join(root, 'empty-vault')
   mkdirSync(join(empty, 'entities'), { recursive: true })
   mkdirSync(join(empty, 'knowledge'))
@@ -442,7 +441,7 @@ async function renderOnboard(root: string, vault: string, severalCwd: string): P
   const hook = async (cwd: string) => {
     const out = await cmdOnboard(['--block'], { home, env: {}, cwd })
     if (out === null) throw new Error('onboard --block printed nothing')
-    return out.replace(blockInner(), BLOCK_PLACEHOLDER).replace(/\n$/, '')
+    return out.replace(/\n$/, '')
   }
   const claude = { CLAUDECODE: '1' }
   const teaching = ITEMS.teachingLines.render({ harness: 'claude-code', mode: 'always-on' })
@@ -459,13 +458,17 @@ async function renderOnboard(root: string, vault: string, severalCwd: string): P
     '',
     '## `hafez onboard --block` (what the SessionStart hook prints)',
     '',
-    'The Block exactly as in `block.md`, then one line per entity matching the folder. The folder is the working directory, its git root, and, in a linked worktree, the main repository\'s root; each is matched exactly, and no directory in between is tried. No match: the Block alone.',
+    'One line per entity matching the folder, never the Block: the instructions file already carries it. The folder is the working directory, its git root, and, in a linked worktree, the main repository\'s root; each is matched exactly, and no directory in between is tried.',
     '',
     fence(await hook(oneCwd), '````'),
     '',
     'Several matches, all printed, active first; an entity with no description gets its slug alone:',
     '',
     fence(await hook(severalCwd), '````'),
+    '',
+    'No match in a git folder that is not the vault\'s own checkout: one line asking for `--resource .` on the next write to the entity whose work lives there. No match outside git, or in the vault\'s checkout: nothing.',
+    '',
+    fence(await hook(gitCwd), '````'),
     '',
     '## `hafez onboard` (status, then the script the agent follows)',
     '',

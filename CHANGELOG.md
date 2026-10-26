@@ -1,5 +1,59 @@
 # Changelog
 
+## 2.4.0 — 2026-10-26
+
+An entity's `resource` is a list of the places its work lives, the Block
+asks for it, and the SessionStart hook prints only the folder match.
+
+### Highlights
+
+- **`resource` holds every place the work lives.** A repo URL and a local
+  checkout, or several repos, on one entity. `--resource` repeats on
+  `create entity` and `update`; each value appends and a duplicate is
+  skipped (two URLs equal after normalisation count as one). `update
+  --resource ""` clears every value; `""` beside a value is a usage error
+  and nothing is written. The `read` header joins the values with ` · `,
+  the SessionStart hook matches any of them, and the OKF export writes the
+  first as `resource` and all of them under `resources` when there are
+  several. A `resource` written as a single string still reads and is
+  rewritten as a list on the entity's next write.
+- **`--resource .` is this folder.** It resolves to the git root's `origin`
+  URL as configured, else its first remote (credentials dropped), else the
+  main checkout's root path, else the working dir; a subfolder or a linked
+  worktree resolves to the repo. `create entity`, `update` and `batch`
+  (`"resource": "."`) resolve it the same way, and `batch --dry-run` shows
+  the resolved value.
+- **Agent Contract v4: the Block's create line carries `--resource <. if
+  the work lives in this folder>`**, so an entity made from a session
+  is found by the hook in later sessions. In a git folder no entity
+  matches, the hook prints one line asking for `--resource .` on the next
+  write. `hafez upgrade` reports the installed Block and `hafez` skill as
+  stale; `hafez onboard --install` refreshes them.
+
+### Fixed
+
+- **A relative vault path worked as no vault at all.** `--vault .` (or a
+  relative `vaultPath` to `createHafez`) read every entity as a knowledge
+  note and refused entity writes. The path is resolved to absolute once at
+  the entry, before anything reads it.
+- **Two processes syncing the index could fail on `UNIQUE items.slug`.**
+  Two write-capable processes that saw the same changed note both deleted
+  its row, then both inserted it. Each note is now replaced in one
+  transaction that re-checks the file hash under the lock, so the second
+  process waits and skips.
+
+### Changed
+
+- **The SessionStart hook prints only the folder match, never the Block.**
+  The instructions file already carries the Block, so the hook's copy was
+  loaded twice per session. No match in a non-git folder prints nothing.
+- **Library: `resource` is `string[]`.** `EntityFrontmatter.resource` was
+  `string | null`; create takes a string or a list, update appends, and
+  `null`, `''` or `[]` clears. `UpdateResult` gains `resource_added`. A
+  literal `.` through the library is `VALIDATION_FAILED`; only the CLI and
+  `batch` resolve it.
+- **Index schema v14.** Run `hafez index rebuild` after upgrading.
+
 ## 2.3.0 — 2026-10-25
 
 A live graph of the vault in the browser, a health check that says what to
